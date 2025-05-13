@@ -545,31 +545,45 @@ class Utils(Operator):
             self.file.write(struct.pack(f"{self.endianness}?", bool))
         
         def read_fixed_string(self, length_in_bytes: int, encoding: str) -> str:
-            result = []
-            bytes_read = 0
-            decoder = codecs.getincrementaldecoder(encoding)()
-            
-            while bytes_read < length_in_bytes:
-                byte = self.file.read(1)
-                bytes_read += 1
+            """
+            Read a fixed-length string from file that may be null-terminated.
+            Args:
+                length_in_bytes: The maximum number of bytes to read
+                encoding: The character encoding to use
                 
-                try:
-                    char = decoder.decode(byte)
+            Returns:
+                The decoded string up to a null terminator or the specified length
+            """
+            # Determine the null terminator representation for this encoding
+            # Use explicit endianness for multi-byte encodings to avoid BOM
+            null_encoding = encoding
+            if encoding.lower().startswith('utf'):
+                if encoding.lower() == 'utf-16':
+                    null_encoding = 'utf-16le'
+                elif encoding.lower() == 'utf-32':
+                    null_encoding = 'utf-32le'
                     
-                    if char == '\x00':
-                        break
-                        
-                    if char:
-                        result.append(char)
-                        
-                except UnicodeDecodeError:
-                    continue
+            null_bytes = '\x00'.encode(null_encoding)
             
-            remaining = length_in_bytes - bytes_read
-            if remaining > 0:
-                self.file.seek(remaining, 1)
-                
-            return ''.join(result)
+            raw_bytes = self.file.read(length_in_bytes)
+            
+            null_pos = raw_bytes.find(null_bytes)
+            
+            if null_pos >= 0:
+                string_bytes = raw_bytes[:null_pos]
+            else:
+                string_bytes = raw_bytes
+            
+            try:
+                return string_bytes.decode(encoding)
+            except UnicodeDecodeError as original_error:
+                raise UnicodeDecodeError(
+                    encoding,             
+                    string_bytes,         
+                    original_error.start, 
+                    original_error.end,   
+                    f"Invalid {encoding} sequence in fixed-length string"
+                )
         
         def write_fixed_string(self, length_in_bytes: int, encoding: str, string: str):
             self.file.write(string.encode(encoding).ljust(length_in_bytes, b'\x00'))

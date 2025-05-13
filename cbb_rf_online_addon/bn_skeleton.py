@@ -15,7 +15,7 @@ from pathlib import Path
 # Very small bones get deleted automatically by Blender, so we need a minimum length to ensure bones aren't deleted while importing.
 MIN_BONE_LENGTH = 0.05
 
-class ImportBNSkeleton(Operator, ImportHelper):
+class CBB_OT_ImportBNSkeleton(Operator, ImportHelper):
     bl_idname = "cbb.bn_skeleton_import"
     bl_label = "Import BN Skeleton"
     bl_options = {"PRESET", "UNDO"}
@@ -40,17 +40,21 @@ class ImportBNSkeleton(Operator, ImportHelper):
     def execute(self, context):
         return self.import_skeletons_from_files(context)
 
-    def import_skeletons_from_files(self: "ImportBNSkeleton", context: bpy.types.Context):
+    def import_skeletons_from_files(self: "CBB_OT_ImportBNSkeleton", context: bpy.types.Context):
+        
+        msg_handler = Utils.MessageHandler(self.debug, self.report)
+        
         for file in self.files:
-            if file.name.casefold().endswith(".bn".casefold()):
-                filepath = self.directory + file.name
+            if file.name.casefold().endswith(".bn"):
+                filepath = os.path.join(self.directory, file.name)
 
-                Utils.debug_print(self.debug, f"Importing skeleton from: {filepath}")
-                skeleton_data = SkeletonData(self.debug)
+                msg_handler.debug_print(f"Importing skeleton from: {filepath}")
+                
+                skeleton_data = SkeletonData(msg_handler)
                 try:
                     skeleton_data.read_skeleton_data(filepath)
                 except Exception as e:
-                    self.report({"ERROR"}, f"Error while trying to read skeleton data from file [{filepath}]: {e}")
+                    msg_handler.report("ERROR", f"Error while trying to read skeleton data from file [{filepath}]: {e}")
                     continue
                 try:
                     file_base_name = Path(file.name).stem
@@ -83,11 +87,11 @@ class ImportBNSkeleton(Operator, ImportHelper):
                         bones.append(bone)
                         bone_lengths.append(9999)
                     
-                    Utils.debug_print(self.debug, f"Created [{len(edit_bones)}] bones in Blender armature.")
+                    msg_handler.debug_print(f"Created [{len(edit_bones)}] bones in Blender armature.")
 
                     root_bones = [i for i in range(skeleton_data.bone_count) if skeleton_data.bone_parent_names[i] == SkeletonData.INVALID_NAME]
                     
-                    Utils.debug_print(self.debug, f"Detected [{len(root_bones)}] bones without a parent.")
+                    msg_handler.debug_print(f"Detected [{len(root_bones)}] bones without a parent.")
                     
                     def __calculate_bone_length(cur_bone_id):
                         def pick_bone_length():
@@ -118,7 +122,7 @@ class ImportBNSkeleton(Operator, ImportHelper):
                         bones[i].length = bone_lengths[i]
                         edit_bone = armature_obj.data.edit_bones[skeleton_data.bone_names[i]]
                         edit_bone.matrix = skeleton_data.bone_absolute_matrices[i]
-                        Utils.debug_print(self.debug, f"Length of bone [{bones[i].name}]: {bones[i].length}")
+                        msg_handler.debug_print(f"Length of bone [{bones[i].name}]: {bones[i].length}")
                         
                         if skeleton_data.bone_parent_ids[i] != SkeletonData.NO_PARENT:
                             bones[i].parent = bones[skeleton_data.bone_parent_ids[i]]
@@ -147,9 +151,9 @@ class ImportBNSkeleton(Operator, ImportHelper):
                     bpy.ops.object.mode_set(mode="OBJECT")
 
                 except Exception as e:
-                    self.report({"ERROR"}, f"Failed to create skeleton: {e}")
+                    msg_handler.report("ERROR", f"Failed to create blender armature for skeleton at [{filepath}]: {e}")
                     traceback.print_exc()
-                    return {"FINISHED"}
+                    continue
 
         return {"FINISHED"}
 
@@ -162,19 +166,19 @@ class ImportBNSkeleton(Operator, ImportHelper):
 class CBB_FH_ImportBNSkeleton(bpy.types.FileHandler):
     bl_idname = "CBB_FH_bn_skeleton_import"
     bl_label = "File handler for skeleton imports"
-    bl_import_operator = ImportBNSkeleton.bl_idname
-    bl_file_extensions = ImportBNSkeleton.filename_ext
+    bl_import_operator = CBB_OT_ImportBNSkeleton.bl_idname
+    bl_file_extensions = CBB_OT_ImportBNSkeleton.filename_ext
 
     @classmethod
     def poll_drop(cls, context):
         return (context.area and context.area.type == "VIEW_3D")
     
-class ExportBNSkeleton(Operator, ExportHelper):
+class CBB_OT_ExportBNSkeleton(Operator, ExportHelper):
     bl_idname = "cbb.bn_skeleton_export"
     bl_label = "Export BN Skeleton"
     bl_options = {"PRESET"}
 
-    filename_ext = ImportBNSkeleton.filename_ext
+    filename_ext = CBB_OT_ImportBNSkeleton.filename_ext
 
     filter_glob: StringProperty(default="*.bn", options={"HIDDEN"}) # type: ignore
 
@@ -196,6 +200,9 @@ class ExportBNSkeleton(Operator, ExportHelper):
         return self.export_skeletons(context, self.directory)
 
     def export_skeletons(self, context: bpy.types.Context, directory: str):
+        
+        msg_handler = Utils.MessageHandler(self.debug, self.report)
+        
         objects_for_exportation = None
         if self.export_only_selected == True:
             objects_for_exportation: list[bpy.types.Object] = [obj for obj in context.selected_objects if obj.type == "ARMATURE"]
@@ -204,22 +211,22 @@ class ExportBNSkeleton(Operator, ExportHelper):
 
         if not objects_for_exportation:
             if self.export_only_selected == True:
-                self.report({"ERROR"}, f"There are no objects of type ARMATURE among currently selected objects. Aborting exportation.")
+                msg_handler.report("ERROR", f"There are no objects of type ARMATURE among currently selected objects. Aborting exportation.")
             else:
-                self.report({"ERROR"}, f"There are no objects of type ARMATURE among scene objects. Aborting exportation.")
+                msg_handler.report("ERROR", f"There are no objects of type ARMATURE among scene objects. Aborting exportation.")
             return {"CANCELLED"}
         
         for armature_object_export in objects_for_exportation:
             def export_skeleton(armature_object: bpy.types.Object):
                 armature_export_name = Utils.get_immediate_parent_collection(armature_object).name
                 filepath: str = bpy.path.ensure_ext(directory + armature_export_name, self.filename_ext)
-                Utils.debug_print(self.debug, f"Exporting armature [{armature_object.name}] to file at [{filepath}]")
+                msg_handler.debug_print(f"Exporting armature [{armature_object.name}] to file at [{filepath}]")
                 
-                skeleton_data = SkeletonData(self.debug)
+                skeleton_data = SkeletonData(msg_handler)
                 try:
                     skeleton_data.build_skeleton_from_armature(armature_object, True)
                 except Exception as e:
-                    self.report({"ERROR"}, f"Failed to build skeleton from armature: {e}")
+                    msg_handler.report("ERROR", f"Failed to build skeleton from armature [{armature_object.name}]: {e}")
                     traceback.print_exc()
                     return
                     
@@ -227,12 +234,12 @@ class ExportBNSkeleton(Operator, ExportHelper):
                 try:
                     skeleton_data.write_skeleton_data(filepath)
                 except Exception as e:
-                    self.report({"ERROR"}, f"Failed to export skeleton: {e}")
+                    msg_handler.report("ERROR", f"Failed to export skeleton: {e}")
                     return
             
             export_skeleton(armature_object_export)
 
-
+        
         return {"FINISHED"}
 
 class SkeletonData:
@@ -244,7 +251,7 @@ class SkeletonData:
     
     INVALID_NAME: str = "NULL"
     NO_PARENT:int = -1
-    def __init__(self, debug: bool):
+    def __init__(self, msg_handler: Utils.MessageHandler):
         self.skeleton_name: str = ""
         self.skeleton_hit_box_max: Vector = Vector((0.0, 0.0, 0.0))
         self.skeleton_hit_box_min: Vector = Vector((0.0, 0.0, 0.0))
@@ -266,13 +273,13 @@ class SkeletonData:
         self.bone_vertices: list[list[Vector]] = []
         self.bone_normals: list[list[Vector]] = []
         self.bone_faces: list[list[int]] = []
-        self.debug: bool = debug
+        self.msg_handler: Utils.MessageHandler = msg_handler
     
     def read_skeleton_data(self, filepath: str):
         """
         Populates skeleton data from data in a file.
         """
-        bbx_filepath = filepath.split(".")[0]+".BBX"
+        bbx_filepath = os.path.splitext(filepath)[0]+".bbx"
         co_conv = Utils.CoordinatesConverter(CoordsSys._3DSMaxInverseY, CoordsSys.Blender)
         
         try:
@@ -281,14 +288,18 @@ class SkeletonData:
                 try:
                     self.skeleton_name = reader.read_fixed_string(256, "ascii")
                 except Exception as e:
-                    raise ValueError(f"Skeleton's name in bbx file could not be read or decoded as ascii correctly: {e}")
+                    self.msg_handler.report("WARNING",f"Skeleton's name in bbx file could not be read or decoded as ascii correctly, using bn file name. Error: {e}")
                 self.skeleton_hit_box_max = reader.read_converted_vector3f()
                 self.skeleton_hit_box_min = reader.read_converted_vector3f()
 
         except FileNotFoundError:
-            raise FileNotFoundError(f"BBX file not found: {bbx_filepath}")
+            self.msg_handler.report("WARNING", f"BBX file was not found at path [{bbx_filepath}]. This is not vital, but the skeleton name in the bbx file will be ignored.")
         except Exception as e:
-            raise RuntimeError(f"Failed to read skeleton data: {e}")
+            self.msg_handler.report("WARNING", f"Unknown error, failed to read bbx data(this is not vital, but the skeleton name in the bbx file will be ignored). Error: {e} ")
+            traceback.print_exc()
+        
+        if self.skeleton_name == "":
+            self.skeleton_name = Path(filepath).stem
         
         co_conv = Utils.CoordinatesConverter(CoordsSys._3DSMax, CoordsSys.Blender)
         
@@ -296,14 +307,14 @@ class SkeletonData:
             with open(filepath, "rb") as f:
                 reader = Utils.Serializer(f, Utils.Serializer.Endianness.Little, Utils.Serializer.Quaternion_Order.XYZW, Utils.Serializer.Matrix_Order.ColumnMajor, co_conv)
                 self.bone_count = reader.read_ushort()
-                Utils.debug_print(self.debug, f"Bone count from source skeleton: {self.bone_count}")
+                self.msg_handler.debug_print(f"Bone count from source skeleton: {self.bone_count}")
 
                 for count in range(self.bone_count):
                     self.bone_names.append(reader.read_fixed_string(100, "ascii"))
                     self.bone_parent_names.append(reader.read_fixed_string(100, "ascii"))
                     self.bone_name_to_id[self.bone_names[count]] = count
                     
-                    Utils.debug_print(self.debug, f"Processing bone number [{count}], name: {self.bone_names[count]}")
+                    self.msg_handler.debug_print(f"Processing bone number [{count}], name: {self.bone_names[count]}")
                     
                     world_matrix = reader.read_matrix()
                     translation, rotation, scale = Utils.decompose_matrix_position_rotation_scale(world_matrix)
@@ -322,7 +333,7 @@ class SkeletonData:
                     if rotation_needs_adjustment:
                         # Magic fix
                         # Maybe if the scale is -1 only in certain axes this would need to be changed, but I haven't found such bone yet
-                        Utils.debug_print(self.debug, f" Bone needs rotation fix")
+                        self.msg_handler.debug_print(f" Bone needs rotation fix")
                         rotation = Quaternion((-rotation.w, -rotation.x, -rotation.y, -rotation.z))
                         world_matrix = Matrix.Translation(translation) @ rotation.to_matrix().to_4x4() @ Matrix.Diagonal(scale).to_4x4()
                     
@@ -330,27 +341,27 @@ class SkeletonData:
                     
                     self.bone_absolute_matrices.append(co_conv.convert_matrix(world_matrix))
 
-                    Utils.debug_print(self.debug, f" Bone converted and fixed world matrix:")
-                    Utils.debug_print(self.debug, f"{self.bone_absolute_matrices[count]}")
+                    self.msg_handler.debug_print(f" Bone converted and fixed world matrix:")
+                    self.msg_handler.debug_print(f"{self.bone_absolute_matrices[count]}")
                     
                     self.bone_local_matrices.append(reader.read_converted_matrix())
                     
-                    Utils.debug_print(self.debug, f" Bone converted local matrix:")
-                    Utils.debug_print(self.debug, f"{self.bone_local_matrices[count]}")
+                    self.msg_handler.debug_print(f" Bone converted local matrix:")
+                    self.msg_handler.debug_print(f"{self.bone_local_matrices[count]}")
                     
                     # Not 100% sure about this one, everything works just fine without it
                     self.bone_parent_inverse_matrices.append(reader.read_converted_matrix())
                     
-                    Utils.debug_print(self.debug, f" Bone converted parent inverse matrix:")
-                    Utils.debug_print(self.debug, f"{self.bone_parent_inverse_matrices[count]}")
+                    self.msg_handler.debug_print(f" Bone converted parent inverse matrix:")
+                    self.msg_handler.debug_print(f"{self.bone_parent_inverse_matrices[count]}")
                     
                     shape_vertices_amount = reader.read_ushort()
                     shape_faces_amount = reader.read_ushort()
                     unknown_number = reader.read_ushort()
                     
-                    Utils.debug_print(self.debug, f" Vertices amount [{shape_vertices_amount}]")
-                    Utils.debug_print(self.debug, f" Faces amount [{shape_faces_amount}]")
-                    Utils.debug_print(self.debug, f" Unknown amount [{unknown_number}]")
+                    self.msg_handler.debug_print(f" Vertices amount [{shape_vertices_amount}]")
+                    self.msg_handler.debug_print(f" Faces amount [{shape_faces_amount}]")
+                    self.msg_handler.debug_print(f" Unknown amount [{unknown_number}]")
                     
                     f.seek(204, 1)
                     
@@ -399,9 +410,11 @@ class SkeletonData:
                         self.bone_parent_ids.append(SkeletonData.NO_PARENT)
                         
         except FileNotFoundError:
-            raise FileNotFoundError(f"BN file not found: {filepath}")
+            raise FileNotFoundError(f"BN file not found at: {filepath}")
+        except UnicodeDecodeError as e:
+            raise UnicodeDecodeError(f"Error decoding a string for the ascii encoding: {e}")
         except Exception as e:
-            raise RuntimeError(f"Failed to read skeleton data: {e}")
+            raise RuntimeError(f"Unknown error, failed to read skeleton data: {e}")
     
     def write_skeleton_data(self, filepath: str):
         co_conv = Utils.CoordinatesConverter(CoordsSys.Blender, CoordsSys._3DSMax)
@@ -456,7 +469,7 @@ class SkeletonData:
             traceback.print_exc()
             raise Exception(f"Could not open file for writing at [{filepath}]: {e}")
         
-        Utils.debug_print(self.debug, f"Skeleton written successfully to: [{filepath}]")
+        self.msg_handler.debug_print(f"Skeleton written successfully to: [{filepath}]")
         
         co_conv = Utils.CoordinatesConverter(CoordsSys.Blender, CoordsSys._3DSMaxInverseY)
         
@@ -477,7 +490,7 @@ class SkeletonData:
             max_z = max(max_z, bone_position.z)
 
         if not has_position_data:
-            Utils.debug_print(self.debug, "Warning: No position for bones found to calculate skeleton bounding box. BBX will have zero bounds.")
+            self.msg_handler.debug_print("Warning: No position for bones found to calculate skeleton bounding box. BBX will have zero bounds.")
             min_x, min_y, min_z = 0.0, 0.0, 0.0
             max_x, max_y, max_z = 0.0, 0.0, 0.0
 
@@ -503,7 +516,8 @@ class SkeletonData:
             traceback.print_exc()
             raise Exception(f"Could not open or write BBX file at [{bbx_filepath}]: {e}")
 
-        Utils.debug_print(self.debug, f"BBX file written successfully to: [{bbx_filepath}]")
+        self.msg_handler.debug_print(f"BBX file written successfully to: [{bbx_filepath}]")
+        
         return True
     
     
@@ -543,7 +557,7 @@ class SkeletonData:
             bone_id = i
             existing_bone_ids.add(bone_id)
             
-            Utils.debug_print(self.debug, f"Bone data for: {bone_name}, bone_id: {bone_id}")
+            self.msg_handler.debug_print(f"Bone data for: {bone_name}, bone_id: {bone_id}")
             
             self.bone_names[bone_id] = bone_name
             
@@ -555,9 +569,9 @@ class SkeletonData:
             
             bone_parent = bone.parent
                 
-            Utils.debug_print(self.debug, f" edit position: {edit_bone_position}")
-            Utils.debug_print(self.debug, f" edit rotation: {edit_bone_rotation}")
-            Utils.debug_print(self.debug, f" parent: {bone_parent}")
+            self.msg_handler.debug_print(f" edit position: {edit_bone_position}")
+            self.msg_handler.debug_print(f" edit rotation: {edit_bone_rotation}")
+            self.msg_handler.debug_print(f" parent: {bone_parent}")
             
             if bone_parent is not None:
                 self.bone_parent_names[bone_id] = bone_parent.name
@@ -566,8 +580,8 @@ class SkeletonData:
                 self.bone_local_matrices[bone_id] = bone_parent.matrix_local.inverted() @ bone.matrix_local
                 self.bone_local_positions[bone_id] = Utils.get_local_position(parent_edit_bone_position, parent_edit_bone_rotation, edit_bone_position)
                 self.bone_local_rotations[bone_id] = Utils.get_local_rotation(parent_edit_bone_rotation, edit_bone_rotation)
-                Utils.debug_print(self.debug, f" local position: {self.bone_local_positions[bone_id]}")
-                Utils.debug_print(self.debug, f" local rotation: {self.bone_local_rotations[bone_id]}")
+                self.msg_handler.debug_print(f" local position: {self.bone_local_positions[bone_id]}")
+                self.msg_handler.debug_print(f" local rotation: {self.bone_local_rotations[bone_id]}")
             else:
                 self.bone_parent_ids[bone_id] = SkeletonData.NO_PARENT
                 self.bone_parent_names[bone_id] = SkeletonData.INVALID_NAME
@@ -604,22 +618,22 @@ class SkeletonData:
            
 
 def menu_func_import(self, context):
-    self.layout.operator(ImportBNSkeleton.bl_idname, text="BN Skeleton (.bn)")
+    self.layout.operator(CBB_OT_ImportBNSkeleton.bl_idname, text="BN Skeleton (.bn)")
 
 def menu_func_export(self, context):
-    self.layout.operator(ExportBNSkeleton.bl_idname, text="BN Skeleton (.bn)")
+    self.layout.operator(CBB_OT_ExportBNSkeleton.bl_idname, text="BN Skeleton (.bn)")
 
 def register():
-    bpy.utils.register_class(ImportBNSkeleton)
+    bpy.utils.register_class(CBB_OT_ImportBNSkeleton)
     bpy.utils.register_class(CBB_FH_ImportBNSkeleton)
-    bpy.utils.register_class(ExportBNSkeleton)
+    bpy.utils.register_class(CBB_OT_ExportBNSkeleton)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
 
 def unregister():
-    bpy.utils.unregister_class(ImportBNSkeleton)
+    bpy.utils.unregister_class(CBB_OT_ImportBNSkeleton)
     bpy.utils.unregister_class(CBB_FH_ImportBNSkeleton)
-    bpy.utils.unregister_class(ExportBNSkeleton)
+    bpy.utils.unregister_class(CBB_OT_ExportBNSkeleton)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
 

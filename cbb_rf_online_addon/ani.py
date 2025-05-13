@@ -17,7 +17,7 @@ import os
 
 FRAME_SCALE = 160
 
-class ImportAni(Operator, ImportHelper):
+class CBB_OT_ImportAni(Operator, ImportHelper):
     bl_idname = "cbb.ani_import"
     bl_label = "Import ani"
     bl_options = {"PRESET", "UNDO"}
@@ -55,13 +55,15 @@ class ImportAni(Operator, ImportHelper):
         return self.import_animations_from_files(context)
 
     def import_animations_from_files(self, context):
+        
+        msg_handler = Utils.MessageHandler(self.debug, self.report)
+        
         for file in self.files:
             if file.name.casefold().endswith(".ani"):
-                filepath: str = self.directory + file.name
+                filepath: str = os.path.join(self.directory, file.name)
                 
                 skeleton_data = None
                 target_armature = None
-                target_collection = None
                 
                 animated_object_count = 0
                 animated_object_names: list[str] = []
@@ -87,16 +89,17 @@ class ImportAni(Operator, ImportHelper):
                 file_base_name = Path(file.name).stem.split("_")[0]
                 
                 try:
-                    with open(self.directory + file.name, "rb") as f:
+                    with open(filepath, "rb") as f:
                         reader = Utils.Serializer(f, Utils.Serializer.Endianness.Little, Utils.Serializer.Quaternion_Order.XYZW, Utils.Serializer.Matrix_Order.ColumnMajor, co_conv)
                         animated_object_count = reader.read_ushort()
                         for i in range(animated_object_count):
                             animated_object_names.append(reader.read_fixed_string(100, "ascii"))
-                            #If set to 0 animation is not considered
+                            # If set to 0 animation is not considered
                             frame_amount.append(reader.read_ushort())
-                            # if set higher than the amount keyframes are registered, it affects looping animations, which does indicate this is the maximum frame.
-                            # if set lower, the highest keyframe set defines the maximum frame.
-                            # actually, the value here is unknown in how it was stored. All I know is that each 160 values here mean one frame.
+                            # If set higher than the amount of keyframes that are registered, it affects looping animations, which does indicate this is the maximum frame.
+                            # If set lower, the highest keyframe set (along the animation's keyframes) defines the maximum frame. In this case, this number is ignored.
+                            # The reason why this value is not set in seconds or frames or whatever else is unknown. However, a single frame has a value of 160 for this number.
+                            # Since the value is an u16, around 409 or so frames the number would overflow and the effect of this is also unknown.
                             frame_counts.append(reader.read_ushort())
                             
                             f.seek(36,1)
@@ -127,9 +130,9 @@ class ImportAni(Operator, ImportHelper):
                             unknown_frames.append([__read_unknown_frames(reader) for _ in range(unknown_keyframe_counts[i])])
 
                 except Exception as e:
-                    self.report({"ERROR"}, f"Failed to read file at [{self.directory + file.name}]: {e}")
+                    msg_handler.report("ERROR", f"Failed to read file at [{filepath}]: {e}")
                     traceback.print_exc()
-                    return {"CANCELLED"}
+                    continue
 
                 found_objects: list[tuple[bpy.types.Object, int]] = []
                 found_bones: list[tuple[str, int]] = []
@@ -139,26 +142,26 @@ class ImportAni(Operator, ImportHelper):
                     objects_collection = bpy.context.selected_objects
                 else:
                     if file_base_name in bpy.data.collections:
-                        Utils.debug_print(self.debug, f"Name [{file_base_name}] found within collections")
+                        msg_handler.debug_print(f"Name [{file_base_name}] found within collections")
                         objects_collection = bpy.data.collections[file_base_name].objects
                     else:
-                        self.report({"ERROR"}, f"No collection with the same base name [{file_base_name}] of the animation could be found in the scene.")
-                        return {"CANCELLED"}
+                        msg_handler.report("ERROR", f"No collection with the same base name [{file_base_name}] of the animation could be found in the scene.")
+                        continue
                     
                 armature_objects = [obj for obj in objects_collection if obj.type == 'ARMATURE']
                 if len(armature_objects) > 1:
-                    self.report({"ERROR"}, "More than one armature is selected. Please select only one armature.")
+                    msg_handler.report("ERROR", "More than one armature is selected. Please select only one armature.")
                     return {"CANCELLED"}
                 
                 if armature_objects:
                     target_armature = armature_objects[0]
-                    Utils.debug_print(self.debug, f"Target armature name: {target_armature.name}")
-                    skeleton_data = SkeletonData(self.debug)
+                    msg_handler.debug_print(f"Target armature name: {target_armature.name}")
+                    skeleton_data = SkeletonData(msg_handler)
                     try:
                         skeleton_data.build_skeleton_from_armature(target_armature, False)
                     except Exception as e:
-                        self.report({"ERROR"}, f"Armature [{target_armature}] which is the target of the imported animation has been found not valid. Aborting. Reason: {e}")
-                        return {"CANCELLED"}
+                        msg_handler.report("ERROR", f"Armature [{target_armature}] which is the target of the imported animation has been found not valid. Aborting. Reason: {e}")
+                        continue
                 
                 for i, object_name in enumerate(animated_object_names):
                     found = False
@@ -177,12 +180,12 @@ class ImportAni(Operator, ImportHelper):
                                 break
 
                     if not found and self.ignore_not_found == False:
-                        self.report({"ERROR"}, f"Object or bone with name '{object_name}' not found in the selection.")
+                        msg_handler.report("ERROR", f"Object or bone with name '{object_name}' not found in the selection.")
                         return {"CANCELLED"}
 
-                Utils.debug_print(self.debug, f"Animation Data: ")
-                Utils.debug_print(self.debug, f" Amount of animated objects: {animated_object_count}")
-                Utils.debug_print(self.debug, f" Amount of frames: {frame_amount[0]}")
+                msg_handler.debug_print(f"Animation Data: ")
+                msg_handler.debug_print(f" Amount of animated objects: {animated_object_count}")
+                msg_handler.debug_print(f" Amount of frames: {frame_amount[0]}")
                 
                 try:
                     # Create animation action
@@ -281,7 +284,7 @@ class ImportAni(Operator, ImportHelper):
 
                 except Exception as e:
                     animation_name = Path(file.name).stem
-                    self.report({"ERROR"}, f"Failed to create animation {animation_name}: {e}")
+                    msg_handler.report("ERROR", f"Failed to create animation {animation_name}: {e}")
                     traceback.print_exc()
                     return {"CANCELLED"}
                 
@@ -298,19 +301,19 @@ class ImportAni(Operator, ImportHelper):
 class CBB_FH_ImportAni(bpy.types.FileHandler):
     bl_idname = "CBB_FH_ani_import"
     bl_label = "File handler for ani imports"
-    bl_import_operator = ImportAni.bl_idname
-    bl_file_extensions = ImportAni.filename_ext
+    bl_import_operator = CBB_OT_ImportAni.bl_idname
+    bl_file_extensions = CBB_OT_ImportAni.filename_ext
 
     @classmethod
     def poll_drop(cls, context):
         return (context.area and context.area.type == "VIEW_3D")
 
-class ExportAni(Operator, ExportHelper):
+class CBB_OT_ExportAni(Operator, ExportHelper):
     bl_idname = "cbb.ani_export"
     bl_label = "Export ani"
     bl_options = {"PRESET"}
 
-    filename_ext = ImportAni.filename_ext
+    filename_ext = CBB_OT_ImportAni.filename_ext
 
     filter_glob: StringProperty(default="*.ANI", options={"HIDDEN"}) # type: ignore
 
@@ -338,6 +341,9 @@ class ExportAni(Operator, ExportHelper):
         return self.export_animations(context, self.directory)
     
     def export_animations(self, context, directory):
+        
+        msg_handler = Utils.MessageHandler(self.debug, self.report)
+        
         # Dictionary to hold actions and the associated objects
         actions_to_export = {}
 
@@ -404,11 +410,11 @@ class ExportAni(Operator, ExportHelper):
 
         # Now export all the collected actions
         for action, objects in actions_to_export.items():
-            self.export_action(action, objects,  directory, self.filename_ext)
+            self.export_action(action, objects, directory, msg_handler)
 
         return {"FINISHED"}
         
-    def export_action(self, action: Action, action_objects: list[bpy.types.Object], directory: str, filename_ext: str):
+    def export_action(self, action: Action, action_objects: list[bpy.types.Object], directory: str, msg_handler: Utils.MessageHandler):
         print(f"Exporting action {action.name}")
         
         old_active_object = bpy.context.view_layer.objects.active
@@ -438,7 +444,7 @@ class ExportAni(Operator, ExportHelper):
         
         baked_action = action_objects[0].animation_data.action
         
-        filepath = bpy.path.ensure_ext(directory + "/" + action.name, filename_ext)
+        filepath = bpy.path.ensure_ext(directory + "/" + action.name, self.filename_ext)
         
         initial_frame = baked_action.frame_range[0]
         last_frame = baked_action.frame_range[1]
@@ -458,7 +464,7 @@ class ExportAni(Operator, ExportHelper):
         export_unknown_keyframe_counts = []
         export_unknown_keyframes = {}
         
-        Utils.debug_print(self.debug,f"Animation [{action.name}] frame range: {int(action.frame_range[0])} - {int(action.frame_range[1])}")
+        msg_handler.debug_print(f"Animation [{action.name}] frame range: {int(action.frame_range[0])} - {int(action.frame_range[1])}")
         
         for object in action_objects:
             
@@ -549,7 +555,7 @@ class ExportAni(Operator, ExportHelper):
                     
             
             if object.type == "ARMATURE":
-                skeleton_data = SkeletonData(self.debug)
+                skeleton_data = SkeletonData(msg_handler)
                 skeleton_data.build_skeleton_from_armature(object, False)
                 
                 for bone_name in skeleton_data.bone_names:
@@ -653,24 +659,24 @@ class ExportAni(Operator, ExportHelper):
         
 
 def menu_func_import(self, context):
-    self.layout.operator(ImportAni.bl_idname, text="ANI (.ANI)")
+    self.layout.operator(CBB_OT_ImportAni.bl_idname, text="ANI (.ANI)")
 
 def menu_func_export(self, context):
-    self.layout.operator(ExportAni.bl_idname, text="ANI (.ANI)")
+    self.layout.operator(CBB_OT_ExportAni.bl_idname, text="ANI (.ANI)")
 
 
 
 def register():
-    bpy.utils.register_class(ImportAni)
+    bpy.utils.register_class(CBB_OT_ImportAni)
     bpy.utils.register_class(CBB_FH_ImportAni)
-    bpy.utils.register_class(ExportAni)
+    bpy.utils.register_class(CBB_OT_ExportAni)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
 
 def unregister():
-    bpy.utils.unregister_class(ImportAni)
+    bpy.utils.unregister_class(CBB_OT_ImportAni)
     bpy.utils.unregister_class(CBB_FH_ImportAni)
-    bpy.utils.unregister_class(ExportAni)
+    bpy.utils.unregister_class(CBB_OT_ExportAni)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
 

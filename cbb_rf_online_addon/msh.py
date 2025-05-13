@@ -19,7 +19,7 @@ from pathlib import Path
 import bmesh
 from .rf_shared import RFShared
 
-class ImportMSH(Operator, ImportHelper):
+class CBB_OT_ImportMSH(Operator, ImportHelper):
     bl_idname = "cbb.msh_import"
     bl_label = "Import MSH"
     bl_options = {"PRESET", "UNDO"}
@@ -77,9 +77,9 @@ class ImportMSH(Operator, ImportHelper):
             return bpy.data.images[texture_name]
 
         # Find the target directory
-        target_directory = ImportMSH.find_target_directory(mesh_file_path, os.path.split(target_dir), max_levels)
+        target_directory = CBB_OT_ImportMSH.find_target_directory(mesh_file_path, os.path.split(target_dir), max_levels)
         if target_directory:
-            texture_path = ImportMSH.find_texture_in_directory(target_directory, texture_name.split(".")[0])
+            texture_path = CBB_OT_ImportMSH.find_texture_in_directory(target_directory, texture_name.split(".")[0])
             if texture_path:
                 return bpy.data.images.load(texture_path, check_existing=True)
 
@@ -184,13 +184,15 @@ class ImportMSH(Operator, ImportHelper):
         return self.import_meshes(context)
 
     def import_meshes(self, context):
+        msg_handler = Utils.MessageHandler(self.debug, self.report)
+        
         for file in self.files:
-            if file.name.casefold().endswith(".msh".casefold()):
+            if file.name.casefold().endswith(".msh"):
                 co_conv = Utils.CoordinatesConverter(CoordsSys._3DSMax, CoordsSys.Blender)
                 
                 def import_msh(file):
                     
-                    filepath: str = self.directory + file.name
+                    filepath: str = os.path.join(self.directory, file.name)
                     
                     target_armature: bpy.types.Object = None
                     
@@ -200,7 +202,7 @@ class ImportMSH(Operator, ImportHelper):
                                 if target_armature is None:
                                     target_armature = obj
                                 else:
-                                    self.report({"ERROR"}, f"More than one armature has been found in the current selection. The imported mesh can only be assigned to one armature at a time.")
+                                    msg_handler.report("ERROR", f"More than one armature has been found in the current selection. The imported mesh can only be assigned to one armature at a time.")
                                     return
                         
                     
@@ -230,27 +232,27 @@ class ImportMSH(Operator, ImportHelper):
                             created_objects: list[bpy.types.Object] = []
                             object_parent_names: list[str] = []
 
-                            Utils.debug_print(self.debug, f"Importing object from: {filepath} // Is MESH08 type: {is_mesh08} // Object amount: {object_amount}")
+                            msg_handler.debug_print(f"Importing object from: {filepath} // Is MESH08 type: {is_mesh08} // Object amount: {object_amount}")
                             bpy.context.window_manager.progress_begin(0, object_amount)
                             
                             for object_num in range(object_amount):
                                 
                                 bpy.context.window_manager.progress_update(object_num)
                                 
-                                Utils.debug_print(self.debug, f" Processing object number: {object_num}")
+                                msg_handler.debug_print(f" Processing object number: {object_num}")
                                 object_name = reader.read_fixed_string(100, "ascii")
                                 parent_name = reader.read_fixed_string(100, "ascii")
                                 
                                 object_parent_names.append(parent_name)
                                 
-                                Utils.debug_print(self.debug, f"  Object name: {object_name}")
-                                Utils.debug_print(self.debug, f"  Object parent name: {parent_name}")
+                                msg_handler.debug_print(f"  Object name: {object_name}")
+                                msg_handler.debug_print(f"  Object parent name: {parent_name}")
                                 
                                 
                                 
                                 object_world_matrix = reader.read_converted_matrix()
                                 
-                                Utils.debug_print(self.debug, f"  Object converted matrix: {object_world_matrix}")
+                                msg_handler.debug_print(f"  Object converted matrix: {object_world_matrix}")
                                 
                                 # Skip local and third matrices, as they are unused
                                 opened_file.seek(128,1)
@@ -259,15 +261,15 @@ class ImportMSH(Operator, ImportHelper):
                                 triangle_amount = reader.read_ushort()
                                 weight_amount = reader.read_ushort()
                                 
-                                Utils.debug_print(self.debug, f"  Vertex amount: {vertex_amount}")
-                                Utils.debug_print(self.debug, f"  Triangle amount: {triangle_amount}")
-                                Utils.debug_print(self.debug, f"  Weight amount: {weight_amount}")
+                                msg_handler.debug_print(f"  Vertex amount: {vertex_amount}")
+                                msg_handler.debug_print(f"  Triangle amount: {triangle_amount}")
+                                msg_handler.debug_print(f"  Weight amount: {weight_amount}")
                                 
                                 texture_path = reader.read_fixed_string(100, "ascii")
                                 effect_path = reader.read_fixed_string(100, "ascii")
                                 
-                                Utils.debug_print(self.debug, f"  Texture path: {texture_path}")
-                                Utils.debug_print(self.debug, f"  Effect texture path: {effect_path}")
+                                msg_handler.debug_print(f"  Texture path: {texture_path}")
+                                msg_handler.debug_print(f"  Effect texture path: {effect_path}")
                                 
                                 # I'm not actually sure about this. The values are way too high sometimes for meshes that are quite small
                                 bounding_box_max = reader.read_converted_vector3f()
@@ -280,7 +282,7 @@ class ImportMSH(Operator, ImportHelper):
                                 # Only useful for non MESH08 meshes
                                 weight_model_type = reader.read_uint()
                                 
-                                Utils.debug_print(self.debug, f"  Weight model type: {weight_model_type}")
+                                msg_handler.debug_print(f"  Weight model type: {weight_model_type}")
                                 
                                 unknown_float3_2 = reader.read_vector3f()
                                 
@@ -298,7 +300,7 @@ class ImportMSH(Operator, ImportHelper):
                                 if is_mesh08:
                                     vertex_amount = reader.read_ushort()
                                     
-                                    Utils.debug_print(self.debug, f"  MESH08 vertex amount: {vertex_amount}")
+                                    msg_handler.debug_print(f"  MESH08 vertex amount: {vertex_amount}")
                                     
                                     bone_indices = []
                                     for i in range(vertex_amount):
@@ -313,7 +315,7 @@ class ImportMSH(Operator, ImportHelper):
                                                 if weight > 0.0:
                                                     vertex_weight_amount += 1
                                                     final_weights.append(read_weights[n])
-                                            if vertex_weight_amount == 3 and read_weights[0]+read_weights[1]+read_weights[2] < (1.0-ImportMSH.WEIGHT_TOLERANCE):
+                                            if vertex_weight_amount == 3 and read_weights[0]+read_weights[1]+read_weights[2] < (1.0-CBB_OT_ImportMSH.WEIGHT_TOLERANCE):
                                                 vertex_weight_amount += 1
                                                 final_weights.append(1-read_weights[0]-read_weights[1]-read_weights[2])
                                             
@@ -329,7 +331,7 @@ class ImportMSH(Operator, ImportHelper):
                                         
                                     triangle_amount = reader.read_ushort()
                                     
-                                    Utils.debug_print(self.debug, f"  MESH08 triangle indices amount: {triangle_amount}")
+                                    msg_handler.debug_print(f"  MESH08 triangle indices amount: {triangle_amount}")
                                     
                                     for i in range(int(triangle_amount/3)):
                                         triangles.append(reader.read_values("3H", 6))
@@ -337,7 +339,7 @@ class ImportMSH(Operator, ImportHelper):
                                     bone_group_amount = reader.read_ushort()
                                     unique_bone_names = []
                                     
-                                    Utils.debug_print(self.debug, f"  MESH08 bone group amount: {bone_group_amount}")
+                                    msg_handler.debug_print(f"  MESH08 bone group amount: {bone_group_amount}")
                                     
                                     for i in range(bone_group_amount):
                                         current_group_bone_amount = reader.read_uint()
@@ -349,7 +351,7 @@ class ImportMSH(Operator, ImportHelper):
                                         
                                         opened_file.seek((4-current_group_bone_amount)*100, 1)
                                     
-                                    Utils.debug_print(self.debug, f"  Successfully read MESH08 data. Organizing bone weights")
+                                    msg_handler.debug_print(f"  Successfully read MESH08 data. Organizing bone weights")
                                     
                                     for vertex_index, weight_data in enumerate(weights):
                                         bone_names = []
@@ -366,7 +368,7 @@ class ImportMSH(Operator, ImportHelper):
                                         opened_file.seek(4, 1)
                                         base_vertices_normals.append(reader.read_converted_vector3f())
                                         
-                                    Utils.debug_print(self.debug, f"  Default mesh successfully read vertice data")
+                                    msg_handler.debug_print(f"  Default mesh successfully read vertice data")
                                     
                                     base_triangles = []
                                     base_triangle_normals = []
@@ -383,7 +385,7 @@ class ImportMSH(Operator, ImportHelper):
                                                                 __read_uv(opened_file)))
                                         opened_file.seek(4, 1)
                                     
-                                    Utils.debug_print(self.debug, f"  Default mesh successfully read triangle data")
+                                    msg_handler.debug_print(f"  Default mesh successfully read triangle data")
                                     
                                     base_vertices_weights = {}
                                     if weight_model_type == 1:
@@ -410,7 +412,7 @@ class ImportMSH(Operator, ImportHelper):
                                             read_weights = reader.read_values("4f", 16)
                                             base_vertices_weights[vertex_index] = (bone_names, read_weights)
                                         
-                                    Utils.debug_print(self.debug, f"  Default mesh successfully read weight data")
+                                    msg_handler.debug_print(f"  Default mesh successfully read weight data")
                                     
                                     for i, tri in enumerate(base_triangles):
                                         vertices_len = len(vertices)
@@ -433,12 +435,12 @@ class ImportMSH(Operator, ImportHelper):
                                                 
                                         triangles.append((vertices_len, vertices_len+1, vertices_len+2))
                                     
-                                    Utils.debug_print(self.debug, f"  Default mesh successfully reconstructed vertices and triangles")
+                                    msg_handler.debug_print(f"  Default mesh successfully reconstructed vertices and triangles")
                                     
-                                    Utils.debug_print(self.debug, f"  Default mesh type vertex amount: {len(vertices)}")
-                                    Utils.debug_print(self.debug, f"  Default mesh type triangle amount: {len(triangles)}")
+                                    msg_handler.debug_print(f"  Default mesh type vertex amount: {len(vertices)}")
+                                    msg_handler.debug_print(f"  Default mesh type triangle amount: {len(triangles)}")
                                 
-                                Utils.debug_print(self.debug, f"  Data from file read successfully")
+                                msg_handler.debug_print(f"  Data from file read successfully")
                                 
                                 mesh = bpy.data.meshes.new(object_name)
                                 obj = bpy.data.objects.new(object_name, mesh)
@@ -446,12 +448,12 @@ class ImportMSH(Operator, ImportHelper):
                                 new_collection.objects.link(obj)
                                 created_objects.append(obj)
                                 
-                                Utils.debug_print(self.debug, f"  Object created in Blender")
+                                msg_handler.debug_print(f"  Object created in Blender")
                                 
                                 mesh.from_pydata(vertices, [], triangles, False)
                                 mesh.update()
                                 
-                                Utils.debug_print(self.debug, f"  Mesh Data assigned")
+                                msg_handler.debug_print(f"  Mesh Data assigned")
                                 
                                 if uvs:
                                     mesh.uv_layers.new(name="UVMap")
@@ -460,9 +462,9 @@ class ImportMSH(Operator, ImportHelper):
                                         for loop_index in range(poly.loop_start, poly.loop_start + poly.loop_total):
                                             uv = uvs[mesh.loops[loop_index].vertex_index]
                                             uv_layer[loop_index].uv = uv
-                                    Utils.debug_print(self.debug, f"  UV data assigned")
+                                    msg_handler.debug_print(f"  UV data assigned")
                                 else:
-                                    Utils.debug_print(self.debug, f"  No UV data to assign")
+                                    msg_handler.debug_print(f"  No UV data to assign")
                                 
                                 
                                 if weights:
@@ -480,22 +482,22 @@ class ImportMSH(Operator, ImportHelper):
                                             
                                             group.add([vertex_index], weight_value, "ADD")
                                     
-                                    Utils.debug_print(self.debug, f"  Weight data assigned")
+                                    msg_handler.debug_print(f"  Weight data assigned")
                                 else:
-                                    Utils.debug_print(self.debug, f"  No weight data to assign")
+                                    msg_handler.debug_print(f"  No weight data to assign")
                                     
                                 
                                 if texture_path:
                                     texture_path = ntpath.basename(texture_path)
-                                    texture = self.get_texture_as_image(self.directory, texture_path, ImportMSH.EXTRACTION_FOLDER, 5) 
+                                    texture = self.get_texture_as_image(self.directory, texture_path, CBB_OT_ImportMSH.EXTRACTION_FOLDER, 5) 
                                     if texture is not None:
-                                        ImportMSH.apply_texture_to_mesh(obj, texture)
-                                        Utils.debug_print(self.debug, f"  Texture data assigned")
+                                        CBB_OT_ImportMSH.apply_texture_to_mesh(obj, texture)
+                                        msg_handler.debug_print(f"  Texture data assigned")
                                     else:
-                                        self.report({"INFO"}, f"Could not find texture: {texture_path}")
-                                        Utils.debug_print(self.debug, f"  Texture data assignment failed")
+                                        msg_handler.report("INFO", f"Could not find texture: {texture_path}")
+                                        msg_handler.debug_print(f"  Texture data assignment failed")
                                 else:
-                                    Utils.debug_print(self.debug, f"  Object has no texture path")
+                                    msg_handler.debug_print(f"  Object has no texture path")
                             
                             # If there is no target armature yet, search for any armature that has all used bones
                             if target_armature is None:
@@ -508,14 +510,14 @@ class ImportMSH(Operator, ImportHelper):
                                             target_armature = obj
                                             break
                                 if target_armature is None:
-                                    self.report({"INFO"}, f"No compatible armature could be found for file at: {filepath}. Information about parenting of objects to bones will be written in custom properties.")
+                                    msg_handler.report("INFO", f"No compatible armature could be found for file at: {filepath}. Information about parenting of objects to bones will be written in custom properties.")
                             else:
                                 bone_names = {bone.name for bone in target_armature.data.bones}
                                         
                                 # Check if the armature has all the bones in list_of_bones_used
                                 if list_of_bones_used.issubset(bone_names) == False:
                                     target_armature = None
-                                    self.report({"INFO"}, f"Selected armature is not compatible with the imported mesh. Information about parenting of objects to bones will be written in custom properties.")
+                                    msg_handler.report("INFO", f"Selected armature is not compatible with the imported mesh. Information about parenting of objects to bones will be written in custom properties.")
                             
                             for obj in created_objects:
                                 mesh = obj.data
@@ -556,12 +558,12 @@ class ImportMSH(Operator, ImportHelper):
                                 
 
                         except UnicodeDecodeError as e:
-                            self.report({"ERROR"}, f"Unicode decode error while opening file at [{filepath}]: {e}")
+                            msg_handler.report("ERROR", f"Unicode decode error while opening file at [{filepath}]: {e}")
                             traceback.print_exc()
                             return
                         
                         except Exception as e:
-                            self.report({"ERROR"}, f"Unexpected error while opening file at [{filepath}]: {e}")
+                            msg_handler.report("ERROR", f"Unexpected error while opening file at [{filepath}]: {e}")
                             traceback.print_exc()
                             return
 
@@ -578,19 +580,19 @@ class ImportMSH(Operator, ImportHelper):
 class CBB_FH_ImportMSH(bpy.types.FileHandler):
     bl_idname = "CBB_FH_msh_import"
     bl_label = "File handler for msh imports"
-    bl_import_operator = ImportMSH.bl_idname
-    bl_file_extensions = ImportMSH.filename_ext
+    bl_import_operator = CBB_OT_ImportMSH.bl_idname
+    bl_file_extensions = CBB_OT_ImportMSH.filename_ext
 
     @classmethod
     def poll_drop(cls, context):
         return (context.area and context.area.type == "VIEW_3D")
 
-class ExportMSH(Operator, ExportHelper):
+class CBB_OT_ExportMSH(Operator, ExportHelper):
     bl_idname = "cbb.msh_export"
     bl_label = "Export MSH"
     bl_options = {"PRESET"}
 
-    filename_ext = ImportMSH.filename_ext
+    filename_ext = CBB_OT_ImportMSH.filename_ext
 
     filter_glob: StringProperty(default="*.msh",options={"HIDDEN"}) # type: ignore
 
@@ -632,6 +634,9 @@ class ExportMSH(Operator, ExportHelper):
         return self.export_meshes(context, self.directory)
 
     def export_meshes(self, context, directory):
+        
+        msg_handler = Utils.MessageHandler(self.debug, self.report)
+        
         objects_for_exportation: list[list[bpy.types.Object], str] = []
 
         if self.collection_export_option == "SELECTED":
@@ -665,11 +670,11 @@ class ExportMSH(Operator, ExportHelper):
 
         if not objects_for_exportation:
             if self.collection_export_option == 'SELECTED':
-                self.report({"ERROR"}, "There are no objects of type MESH or EMPTY among currently selected objects. Aborting exportation.")
+                msg_handler.report("ERROR", "There are no objects of type MESH or EMPTY among currently selected objects. Aborting exportation.")
             elif self.collection_export_option == 'ACTIVE_COLLECTION':
-                self.report({"ERROR"}, f"There are no objects of type MESH or EMPTY in the active collection '{active_collection.name}'. Aborting exportation.")
+                msg_handler.report("ERROR", f"There are no objects of type MESH or EMPTY in the active collection '{active_collection.name}'. Aborting exportation.")
             elif self.collection_export_option == 'ALL_COLLECTIONS':
-                self.report({"ERROR"}, "There are no objects of type MESH or EMPTY in any of the collections. Aborting exportation.")
+                msg_handler.report("ERROR", "There are no objects of type MESH or EMPTY in any of the collections. Aborting exportation.")
             return {"CANCELLED"}
         
         co_conv = Utils.CoordinatesConverter(CoordsSys.Blender, CoordsSys._3DSMax)
@@ -693,7 +698,7 @@ class ExportMSH(Operator, ExportHelper):
                 object_weight_data = {}
                 
                 try:
-                    Utils.debug_print(self.debug, f"Exporting objects to file at [{export_file_path}]")
+                    msg_handler.debug_print(f"Exporting objects to file at [{export_file_path}]")
                     
                     def __add_object_data(object_index: int , name: str, parent_name: str, world_matrix: Matrix, local_matrix: Matrix, exporting_vertices, exporting_normals, exporting_uvs, exporting_polygons, exporting_weights, exporting_unique_bones_list, texture_path, effect_path):
                         nonlocal object_amount
@@ -766,7 +771,7 @@ class ExportMSH(Operator, ExportHelper):
                                 
                                 weight_sum = current_exporting_weights[0] + current_exporting_weights[1] + current_exporting_weights[2]
                                 
-                                if weight_sum < 1.0-ImportMSH.WEIGHT_TOLERANCE:
+                                if weight_sum < 1.0-CBB_OT_ImportMSH.WEIGHT_TOLERANCE:
                                     current_exporting_weights = (current_exporting_weights[0], current_exporting_weights[1], current_exporting_weights[2], 1.0-weight_sum)
                                 else:
                                     current_exporting_weights = (current_exporting_weights[0], current_exporting_weights[1], current_exporting_weights[2], 0.0)
@@ -852,11 +857,11 @@ class ExportMSH(Operator, ExportHelper):
                             mesh_loops = mesh.loops
                             mesh_uvs = mesh.uv_layers.active.data if mesh.uv_layers.active else None
 
-                            Utils.debug_print(self.debug, f"Object [{object.name}]'s vertex amount: [{len(mesh_vertices)}]")
-                            Utils.debug_print(self.debug, f"Object [{object.name}]'s polygon amount: [{len(mesh_polygons)}]")
-                            Utils.debug_print(self.debug, f"Object [{object.name}]'s loop amount: [{len(mesh_loops)}]")
+                            msg_handler.debug_print(f"Object [{object.name}]'s vertex amount: [{len(mesh_vertices)}]")
+                            msg_handler.debug_print(f"Object [{object.name}]'s polygon amount: [{len(mesh_polygons)}]")
+                            msg_handler.debug_print(f"Object [{object.name}]'s loop amount: [{len(mesh_loops)}]")
                             if mesh_uvs is not None:
-                                Utils.debug_print(self.debug, f"Object [{object.name}]'s uv amount: [{len(mesh_uvs)}]")
+                                msg_handler.debug_print(f"Object [{object.name}]'s uv amount: [{len(mesh_uvs)}]")
 
                             # Step 1: Get original vertices
                             original_mesh_vertices = [v.co for v in mesh_vertices]
@@ -958,8 +963,8 @@ class ExportMSH(Operator, ExportHelper):
                             # Polygons are already triangulated, final indice amount will be it's length * 3
                             polygon_indices_amount = len(exporter_polygons)*3
                             
-                            Utils.debug_print(self.debug, f"Object [{object.name}]'s vertex amount for export: [{len(exporter_vertices)}]")
-                            Utils.debug_print(self.debug, f"Object [{object.name}]'s polygon amount for export: [{len(exporter_polygons)}]")
+                            msg_handler.debug_print(f"Object [{object.name}]'s vertex amount for export: [{len(exporter_vertices)}]")
+                            msg_handler.debug_print(f"Object [{object.name}]'s polygon amount for export: [{len(exporter_polygons)}]")
                         
                         if polygon_indices_amount <= 65535:
                             __add_object_data(object_amount, object_name, object_parent_name, object_world_matrix, object_local_matrix, exporter_vertices, exporter_normals, exporter_uvs, exporter_polygons, exporter_weights, unique_bones_list, object_texture_path, "")
@@ -997,7 +1002,7 @@ class ExportMSH(Operator, ExportHelper):
                             
                         
                 except Exception as e:
-                    self.report({"ERROR"}, f"Exception while trying to remap vertices for object [{object.name}]: {e}")
+                    msg_handler.report("ERROR", f"Exception while trying to remap vertices for object [{object.name}]: {e}")
                     traceback.print_exc()
                     return
                 try:
@@ -1080,11 +1085,11 @@ class ExportMSH(Operator, ExportHelper):
                         except Exception as e:
                             file.close()
                             os.remove(export_file_path)
-                            self.report({"ERROR"}, f"Exception while writing to file at [{export_file_path}]: {e}")
+                            msg_handler.report("ERROR", f"Exception while writing to file at [{export_file_path}]: {e}")
                             traceback.print_exc()
                             return
                 except Exception as e:
-                    self.report({"ERROR"}, f"Could not open file for writing at [{export_file_path}]: {e}")
+                    msg_handler.report("ERROR", f"Could not open file for writing at [{export_file_path}]: {e}")
                     traceback.print_exc()
                     return
 
@@ -1093,22 +1098,22 @@ class ExportMSH(Operator, ExportHelper):
         return {"FINISHED"}
 
 def menu_func_import(self, context):
-    self.layout.operator(ImportMSH.bl_idname, text="MSH (.msh)")
+    self.layout.operator(CBB_OT_ImportMSH.bl_idname, text="MSH (.msh)")
 
 def menu_func_export(self, context):
-    self.layout.operator(ExportMSH.bl_idname, text="MSH (.msh)")
+    self.layout.operator(CBB_OT_ExportMSH.bl_idname, text="MSH (.msh)")
 
 def register():
-    bpy.utils.register_class(ImportMSH)
+    bpy.utils.register_class(CBB_OT_ImportMSH)
     bpy.utils.register_class(CBB_FH_ImportMSH)
-    bpy.utils.register_class(ExportMSH)
+    bpy.utils.register_class(CBB_OT_ExportMSH)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
 
 def unregister():
-    bpy.utils.unregister_class(ImportMSH)
+    bpy.utils.unregister_class(CBB_OT_ImportMSH)
     bpy.utils.unregister_class(CBB_FH_ImportMSH)
-    bpy.utils.unregister_class(ExportMSH)
+    bpy.utils.unregister_class(CBB_OT_ExportMSH)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_export)
 
