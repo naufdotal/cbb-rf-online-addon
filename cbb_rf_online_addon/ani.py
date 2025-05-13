@@ -155,9 +155,9 @@ class ImportAni(Operator, ImportHelper):
                     Utils.debug_print(self.debug, f"Target armature name: {target_armature.name}")
                     skeleton_data = SkeletonData(self.debug)
                     try:
-                        skeleton_data.build_skeleton_from_armature(target_armature, False, False)
+                        skeleton_data.build_skeleton_from_armature(target_armature, False)
                     except Exception as e:
-                        self.report({"ERROR"}, f"Armature [{target_armature}] which is the target of the imported animation has been found not valid. Aborting.")
+                        self.report({"ERROR"}, f"Armature [{target_armature}] which is the target of the imported animation has been found not valid. Aborting. Reason: {e}")
                         return {"CANCELLED"}
                 
                 for i, object_name in enumerate(animated_object_names):
@@ -550,7 +550,7 @@ class ExportAni(Operator, ExportHelper):
             
             if object.type == "ARMATURE":
                 skeleton_data = SkeletonData(self.debug)
-                skeleton_data.build_skeleton_from_armature(object, False, False)
+                skeleton_data.build_skeleton_from_armature(object, False)
                 
                 for bone_name in skeleton_data.bone_names:
                     index = len(export_object_names)
