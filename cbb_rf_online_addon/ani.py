@@ -147,7 +147,7 @@ class CBB_OT_ImportAni(Operator, ImportHelper):
                     else:
                         msg_handler.report("ERROR", f"No collection with the same base name [{file_base_name}] of the animation could be found in the scene.")
                         continue
-                    
+                
                 armature_objects = [obj for obj in objects_collection if obj.type == 'ARMATURE']
                 if len(armature_objects) > 1:
                     msg_handler.report("ERROR", "More than one armature is selected. Please select only one armature.")

@@ -848,7 +848,7 @@ class CBB_OT_ExportMSH(Operator, ExportHelper):
                                     albedo_texture = Utils.find_image_texture_for_input(node, 'Base Color')
                         
                         if albedo_texture:
-                            object_texture_path = albedo_texture.filepath
+                            object_texture_path = f"D:\\{albedo_texture.name}"
                         
                         if object.type == "MESH":
                             mesh: bpy.types.Mesh = object.data
