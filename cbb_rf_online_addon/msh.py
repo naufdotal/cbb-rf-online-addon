@@ -77,11 +77,11 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
             return bpy.data.images[texture_name]
 
         # Find the target directory
-        target_directory = CBB_OT_ImportMSH.find_target_directory(mesh_file_path, os.path.split(target_dir), max_levels)
-        if target_directory:
-            texture_path = CBB_OT_ImportMSH.find_texture_in_directory(target_directory, texture_name.split(".")[0])
-            if texture_path:
-                return bpy.data.images.load(texture_path, check_existing=True)
+        #target_directory = CBB_OT_ImportMSH.find_target_directory(mesh_file_path, os.path.split(target_dir), max_levels)
+        #if target_directory:
+            #texture_path = CBB_OT_ImportMSH.find_texture_in_directory(target_directory, texture_name.split(".")[0])
+            #if texture_path:
+                #return bpy.data.images.load(texture_path, check_existing=True)
 
         # Normalize mesh file path
         mesh_file_path = os.path.normpath(mesh_file_path)
@@ -101,6 +101,27 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
             self.report({"INFO"}, f"Textures folder does not exist: {textures_folder}")
             return None
 
+        target_filename_stem = os.path.splitext(texture_name)[0]
+        target_filename_stem_lower = target_filename_stem.casefold()
+
+
+        for root, _, files_in_dir in os.walk(textures_folder):
+            for found_file in files_in_dir:
+                found_file_stem, found_file_ext = os.path.splitext(found_file)
+                if found_file_stem.casefold() == target_filename_stem_lower:
+                    if found_file_ext.casefold() == ".dds":
+                        full_texture_path = os.path.join(root, found_file)
+                        try:
+                            blender_image = bpy.data.images.load(full_texture_path, check_existing=True)
+                            blender_image.pack()
+                            return blender_image
+                        except RuntimeError as e:
+                            self.report({"WARNING"}, f"Found texture file '{full_texture_path}' but failed to load: {e}")
+                        except Exception as e:
+                            self.report({"ERROR"}, f"Unexpected error loading loose texture '{full_texture_path}': {e}")
+                            traceback.print_exc()
+                            return None # Or just 'continue' to try RFS files next
+        
         # List all .rfs files in the textures folder
         rfs_files = [file for file in os.listdir(textures_folder) if file.casefold().endswith('.rfs')]
 
@@ -243,7 +264,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                 object_name = reader.read_fixed_string(100, "ascii")
                                 parent_name = reader.read_fixed_string(100, "ascii")
                                 
-                                object_parent_names.append(parent_name)
+                                
                                 
                                 msg_handler.debug_print(f"  Object name: {object_name}")
                                 msg_handler.debug_print(f"  Object parent name: {parent_name}")
@@ -260,6 +281,12 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                 vertex_amount = reader.read_ushort()
                                 triangle_amount = reader.read_ushort()
                                 weight_amount = reader.read_ushort()
+                                
+                                # Force no parent for weighted meshes
+                                if weight_amount != 0:
+                                    parent_name = SkeletonData.INVALID_NAME
+                                
+                                object_parent_names.append(parent_name)
                                 
                                 msg_handler.debug_print(f"  Vertex amount: {vertex_amount}")
                                 msg_handler.debug_print(f"  Triangle amount: {triangle_amount}")
@@ -308,17 +335,14 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                         
                                         read_weights = reader.read_values("3f", 12)
                                         if weight_amount > 0:
-                                            final_weights = []
-                                            
-                                            vertex_weight_amount = 0
-                                            for n, weight in enumerate(read_weights):
-                                                if weight > 0.0:
-                                                    vertex_weight_amount += 1
-                                                    final_weights.append(read_weights[n])
-                                            if vertex_weight_amount == 3 and read_weights[0]+read_weights[1]+read_weights[2] < (1.0-CBB_OT_ImportMSH.WEIGHT_TOLERANCE):
-                                                vertex_weight_amount += 1
-                                                final_weights.append(1-read_weights[0]-read_weights[1]-read_weights[2])
-                                            
+                                            final_weights = list(read_weights)
+                                            s = sum(final_weights)
+                                            if s < (1.0 - CBB_OT_ImportMSH.WEIGHT_TOLERANCE):
+                                                final_weights.append(1.0 - s)
+                                            while len(final_weights) < 4:
+                                                final_weights.append(0.0)
+                                            if sum(final_weights) < 1e-6:
+                                                final_weights = [1.0, 0.0, 0.0, 0.0]
                                             weights.append(final_weights)
                                         
                                         bone_indices.append(reader.read_values("4H", 8))

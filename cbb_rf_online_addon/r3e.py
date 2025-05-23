@@ -175,7 +175,7 @@ class ImportR3E(Operator, ImportHelper):
                 links = material.node_tree.links
                 bsdf = nodes.get('Principled BSDF')
                 
-                RFShared.process_texture_layers(r3m_materials[material_id], material, nodes, links, bsdf, texture_dictionary, context)
+                RFShared.process_texture_layers(r3m_materials[material_id], material, nodes, links, bsdf, texture_dictionary, context, f"Entity_{entity_name}Mesh_")
                     
                 if material_group.animated_object_id == 0:
                     # Add material to static object

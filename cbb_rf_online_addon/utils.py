@@ -890,6 +890,36 @@ class Utils(Operator):
         var.targets[0].id = target_obj
         var.targets[0].data_path = f'{target_prop}'
         driver.expression = expression
+        
+    @staticmethod
+    def create_driver_single_new(target_rna_item, # The RNA item that has the property (e.g., a node socket)
+                                 property_name_string: str, # e.g., "default_value"
+                                 property_index: int,       # e.g., 0 for R, 1 for G, -1 if not an array
+                                 var_name: str,
+                                 source_object_id: bpy.types.ID, # The ID data-block (e.g., material)
+                                 source_prop_datapath: str, # Data path on the source_object_id
+                                 expression: str):
+        
+        # Add the driver to the specified index of the property
+        # If property_index is -1, it's added to the property directly (if not an array/scalar)
+        driver_fcurve = target_rna_item.driver_add(property_name_string, property_index)
+        driver = driver_fcurve.driver # Get the driver object from the FCurve
+
+        driver.type = 'SCRIPTED'
+        
+        # Remove any pre-existing variables to avoid duplicates if re-running
+        for v in list(driver.variables): # Iterate over a copy for safe removal
+            driver.variables.remove(v)
+            
+        var = driver.variables.new()
+        var.name = var_name
+        var.type = "SINGLE_PROP"
+        
+        var.targets[0].id_type = source_object_id.rna_type.identifier.upper() # More robust e.g. "MATERIAL"
+        var.targets[0].id = source_object_id
+        var.targets[0].data_path = source_prop_datapath # This needs to be the full path from the ID
+        
+        driver.expression = expression
 
 # -----------------------------------CUSTOM DATA TYPES--------------------------------------------------------------
     

@@ -141,9 +141,15 @@ class CBB_OT_ImportAni(Operator, ImportHelper):
                 if self.apply_to_selected_objects == True:
                     objects_collection = bpy.context.selected_objects
                 else:
-                    if file_base_name in bpy.data.collections:
+                    matching_collection = None
+                    for collection in bpy.data.collections:
+                        if collection.name.casefold() == file_base_name.casefold():
+                            matching_collection = collection
+                            break
+                    
+                    if matching_collection:
                         msg_handler.debug_print(f"Name [{file_base_name}] found within collections")
-                        objects_collection = bpy.data.collections[file_base_name].objects
+                        objects_collection = matching_collection.objects
                     else:
                         msg_handler.report("ERROR", f"No collection with the same base name [{file_base_name}] of the animation could be found in the scene.")
                         continue

@@ -7,7 +7,7 @@ from mathutils import Vector, Quaternion, Matrix, Euler
 import mathutils
 from .utils import Utils, CoordsSys, Vector3Int
 import os
-from .rf_shared import RFShared, SCALE_FACTOR, ReadFaceStruct, MaterialGroup, AnimatedObject, LayerFlag, ReadEntityStruct, EntityStruct, EntityRPKIndices, R3MMaterial, MaterialProperties, TextureLayer, AlphaType
+from .rf_shared import RFShared, SCALE_FACTOR, ReadFaceStruct, MaterialGroup, AnimatedObject, LayerFlag, ReadEntityStruct, EntityStruct, EntityRPKIndices, R3MMaterial, MaterialProperties, TextureLayer, BlendMethod
 from .r3e import ImportR3E
 from math import radians
 import traceback
@@ -74,6 +74,12 @@ class ImportBSP(Operator, ImportHelper):
     import_and_show_light_maps: BoolProperty(
         name="Import And Show Light Maps",
         description="This option will import light maps and show them in the imported material groups",
+        default=False
+    ) # type: ignore
+    
+    import_spt_entities: BoolProperty(
+        name="Import SPT Entities",
+        description="This option, if true, will import SPT entities along common R3E ones. SPT entities are incomplete, however, and will not work as expected.",
         default=False
     ) # type: ignore
 
@@ -397,6 +403,9 @@ class ImportBSP(Operator, ImportHelper):
                     entity_collection = bpy.data.collections.new("BSP_ENTITIES")
                     bpy.context.scene.collection.children.link(entity_collection)
                     
+                    entity_template_collection = bpy.data.collections.new("BSP_ENTITIES_TEMPLATES")
+                    bpy.context.scene.collection.children.link(entity_template_collection)
+                    
                     map_collection = bpy.data.collections.new(BSP_MAP_COLLECTION_NAME)
                     bpy.context.scene.collection.children.link(map_collection)
                     
@@ -412,12 +421,10 @@ class ImportBSP(Operator, ImportHelper):
                                 created_objects.append(obj)
                                 
 
-                                print(f"\rProcessing object: {material_name} | [{progress}/{len(material_groups)}] {(progress/len(material_groups)*100.0):.2f}%", end="")
+                                print(f"\r[{progress}/{len(material_groups)}] {(progress/len(material_groups)*100.0):.2f}% Processing object: {material_name} | ", end=f"")
                                 
                                 vertices = []
                                 faces_indices = []
-                                mesh_uvs = []
-                                mesh_light_uvs = []
 
                                 vertex_index_to_read_index = []
 
@@ -427,29 +434,39 @@ class ImportBSP(Operator, ImportHelper):
                                     vertex_start_id = face_struct.vertex_start_id
                                     vertex_amount = face_struct.vertex_amount
 
-                                    face_vertices = []
-                                    face_uvs = []
-                                    face_light_uvs = []
                                     
-                                    for j in range(vertex_amount):
-                                        vertex_index = vertices_ids[vertex_start_id + j]
-                                        vertex_index_to_read_index.append(vertex_start_id + j)
+                                    for j in range(vertex_amount - 2):
+                                        face_vertices = []
+                                        
+                                        vertex_index_0 = vertices_ids[vertex_start_id + 0]
+                                        vertex_index_to_read_index.append(vertex_start_id + 0)
                                         face_vertices.append(len(vertices))
                                         if material_group.animated_object_id != 0:
-                                            three_ds_max_vertex = co_conv_blender_unity.convert_vector3f(read_vertices[vertex_index])
-                                            vertices.append(three_ds_max_vertex)
+                                            three_ds_max_vertex_0 = co_conv_blender_unity.convert_vector3f(read_vertices[vertex_index_0])
+                                            vertices.append(three_ds_max_vertex_0)
                                         else:
-                                            vertices.append(read_vertices[vertex_index])
-                                        face_uvs.append(uvs[vertex_start_id + j])
-                                        if material_group.light_id != -1:
-                                            face_light_uvs.append(bsp_light_uvs[vertex_start_id + j])
-                                    face_vertices.reverse()
-                                    face_uvs.reverse()
-                                    if material_group.light_id != -1:
-                                        face_light_uvs.reverse()
-                                        mesh_light_uvs.extend(face_light_uvs)
-                                    faces_indices.append(face_vertices)
-                                    mesh_uvs.extend(face_uvs)
+                                            vertices.append(read_vertices[vertex_index_0])
+                                        
+                                        vertex_index_1 = vertices_ids[vertex_start_id + j + 1]
+                                        vertex_index_to_read_index.append(vertex_start_id + j + 1)
+                                        face_vertices.append(len(vertices))
+                                        if material_group.animated_object_id != 0:
+                                            three_ds_max_vertex_1 = co_conv_blender_unity.convert_vector3f(read_vertices[vertex_index_1])
+                                            vertices.append(three_ds_max_vertex_1)
+                                        else:
+                                            vertices.append(read_vertices[vertex_index_1])
+                                        
+                                        vertex_index_2 = vertices_ids[vertex_start_id + j + 2]
+                                        vertex_index_to_read_index.append(vertex_start_id + j + 2)
+                                        face_vertices.append(len(vertices))
+                                        if material_group.animated_object_id != 0:
+                                            three_ds_max_vertex_2 = co_conv_blender_unity.convert_vector3f(read_vertices[vertex_index_2])
+                                            vertices.append(three_ds_max_vertex_2)
+                                        else:
+                                            vertices.append(read_vertices[vertex_index_2])
+                                                                            
+                                        face_vertices.reverse()
+                                        faces_indices.append(face_vertices)
                                        
 
                                 mesh.from_pydata(vertices, [], faces_indices)
@@ -474,8 +491,6 @@ class ImportBSP(Operator, ImportHelper):
                                         light_uv_layer = mesh.uv_layers.new(name="LightUVMap")
                                     else:
                                         light_uv_layer = mesh.uv_layers["LightUVMap"]
-                                
-                                    light_texture_dictionary[material_group.light_id]
                                     uv_light_layer = mesh.uv_layers.get("LightUVMap").data
                                     light_uv_layer.active = True
                                 
@@ -489,44 +504,45 @@ class ImportBSP(Operator, ImportHelper):
                                             uv_light_layer[loop_index].uv = bsp_light_uvs[vertex_index]
                                         
                                 if self.import_and_show_light_maps == True:
-                                    uv_map_node = nodes.new(type='ShaderNodeUVMap')
-                                    uv_map_node.location = (-400, 200)
-                                    uv_map_node.uv_map = "LightUVMap"
+                                    if material_group.light_id != -1:
+                                        uv_map_node = nodes.new(type='ShaderNodeUVMap')
+                                        uv_map_node.location = (-400, 200)
+                                        uv_map_node.uv_map = "LightUVMap"
 
-                                    image_texture_node = nodes.new(type='ShaderNodeTexImage')
-                                    image_texture_node.location = (-200, 200)
-                                    image_texture_node.image = bpy.data.images.get(light_texture_dictionary[material_group.light_id])
-                                    if not image_texture_node.image:
-                                        raise ValueError(f"Image for light ID {material_group.light_id} not found in Blender.")
-                                    image_texture_node.image.colorspace_settings.name = 'Non-Color'
-                                    
-                                    links.new(uv_map_node.outputs["UV"], image_texture_node.inputs["Vector"])
-                                    
-                                    current_base_color_input = None
-                                    for link in links:
-                                        if link.to_node == bsdf and link.to_socket.name == "Base Color":
-                                            current_base_color_input = link.from_node
-                                            links.remove(link)  # Remove the existing connection
-                                            break
+                                        image_texture_node = nodes.new(type='ShaderNodeTexImage')
+                                        image_texture_node.location = (-200, 200)
+                                        image_texture_node.image = bpy.data.images.get(light_texture_dictionary[material_group.light_id])
+                                        if not image_texture_node.image:
+                                            raise ValueError(f"Image for light ID {material_group.light_id} not found in Blender.")
+                                        image_texture_node.image.colorspace_settings.name = 'Non-Color'
+                                        
+                                        links.new(uv_map_node.outputs["UV"], image_texture_node.inputs["Vector"])
+                                        
+                                        current_base_color_input = None
+                                        for link in links:
+                                            if link.to_node == bsdf and link.to_socket.name == "Base Color":
+                                                current_base_color_input = link.from_node
+                                                links.remove(link)  # Remove the existing connection
+                                                break
 
-                                    if not current_base_color_input:
-                                        raise ValueError("No input found for BSDF's Base Color.")
+                                        if not current_base_color_input:
+                                            raise ValueError("No input found for BSDF's Base Color.")
 
-                                    vector_math_node = nodes.new(type="ShaderNodeVectorMath")
-                                    vector_math_node.operation = "MULTIPLY"
-                                    vector_math_node.inputs[1].default_value = (2.0, 2.0, 2.0)
-                                    links.new(image_texture_node.outputs["Color"], vector_math_node.inputs[0])
-                                    
-                                    mix_node = nodes.new(type='ShaderNodeMixRGB')
-                                    mix_node.location = (0, 200)
-                                    mix_node.blend_type = 'MULTIPLY'  # You can change this to 'ADD', 'MULTIPLY', etc., as needed.
-                                    mix_node.inputs['Fac'].default_value = 1.0  # Set to full influence
-                                    
-                                    links.new(current_base_color_input.outputs[0], mix_node.inputs['Color1'])
-                                    
-                                    links.new(vector_math_node.outputs['Vector'], mix_node.inputs['Color2'])
-                                    
-                                    links.new(mix_node.outputs["Color"], bsdf.inputs['Base Color'])
+                                        vector_math_node = nodes.new(type="ShaderNodeVectorMath")
+                                        vector_math_node.operation = "MULTIPLY"
+                                        vector_math_node.inputs[1].default_value = (2.0, 2.0, 2.0)
+                                        links.new(image_texture_node.outputs["Color"], vector_math_node.inputs[0])
+                                        
+                                        mix_node = nodes.new(type='ShaderNodeMixRGB')
+                                        mix_node.location = (0, 200)
+                                        mix_node.blend_type = 'MULTIPLY'  # You can change this to 'ADD', 'MULTIPLY', etc., as needed.
+                                        mix_node.inputs['Fac'].default_value = 1.0  # Set to full influence
+                                        
+                                        links.new(current_base_color_input.outputs[0], mix_node.inputs['Color1'])
+                                        
+                                        links.new(vector_math_node.outputs['Vector'], mix_node.inputs['Color2'])
+                                        
+                                        links.new(mix_node.outputs["Color"], bsdf.inputs['Base Color'])
                                 
                                 
                                 
@@ -784,7 +800,7 @@ class ImportBSP(Operator, ImportHelper):
                             file_structure_stack = []
                             for i in range (rpk_file_amount):
                                 entry_name = entries_name[i]
-                                print(f"Entry: {entry_name}")
+                                #print(f"Entry: {entry_name}")
                                 entry_file_size = entries_file_size[i]
                                 entry_file_amount = entries_file_amount[i]
                                 
@@ -812,7 +828,7 @@ class ImportBSP(Operator, ImportHelper):
                                         entity_data["entity_size_in_rpk"] = entry_file_size+next_valid_offset
                                     
                                     entity_relative_path = os.path.join(f"\\".join(paths), (f"\\{entry_name}")).casefold().replace(f"\\\\", f"\\")
-                                    print(f"Entity Relative Path: {entity_relative_path}")
+                                    #print(f"Entity Relative Path: {entity_relative_path}")
                                     entity_database[entity_relative_path] = entity_data
                                     file_structure_stack[-1] = (file_structure_stack[-1][0], file_structure_stack[-1][1]-1)
                                     
@@ -840,26 +856,27 @@ class ImportBSP(Operator, ImportHelper):
                         r3e_path = entity_file_path
                         entity_name = os.path.basename(entity_file_path)
                         if entity_file_path.endswith(".spt"):
-                            entity_data = entity_database[entity_file_path]
-                            with open(entity_data["rpk_file_path"], 'rb') as rpk_file:
-                                rpk_file.seek(entity_data["entity_offset_in_rpk"])
-                                spt_data = rpk_file.read(entity_data["entity_size_in_rpk"]).decode(encoding="euc-kr")
-                                spt_lines = spt_data.splitlines()
-                                for line in spt_lines:
-                                    print(f"Line in spt_data for entity {entity_name}: {line}")
-                                    line = line.strip()
-                                    split_line = line.split()
-                                    if len(split_line) > 0 and split_line[0] == "entity_file":
-                                        print(f"Found raw path to r3e entity for SPT: {split_line[1]}")
-                                        r3e_path = split_line[1].casefold().removeprefix(f".\\map\\entity")
+                            if self.import_spt_entities == False:
+                                continue
+                            
+                            entity_data = entity_database.get(entity_file_path)
+                            if entity_data is not None:
+                                with open(entity_data["rpk_file_path"], 'rb') as rpk_file:
+                                    rpk_file.seek(entity_data["entity_offset_in_rpk"])
+                                    spt_data = rpk_file.read(entity_data["entity_size_in_rpk"]).decode(encoding="euc-kr")
+                                    spt_lines = spt_data.splitlines()
+                                    for line in spt_lines:
+                                        #print(f"Line in spt_data for entity {entity_name}: {line}")
+                                        line = line.strip()
+                                        split_line = line.split()
+                                        if len(split_line) > 0 and split_line[0] == "entity_file":
+                                            #print(f"Found raw path to r3e entity for SPT: {split_line[1]}")
+                                            r3e_path = split_line[1].casefold().removeprefix(f".\\map\\entity")
                         
                         r3m_path = f"{os.path.splitext(r3e_path)[0]}.r3m"
                         r3t_path = f"{os.path.splitext(r3e_path)[0]}.r3t"
                         
-                        print(f"Entity_file_path = {entity_file_path}")
-                        print(f"r3m path = {r3e_path}")
-                        print(f"r3m path = {r3m_path}")
-                        print(f"splitext = {os.path.splitext(r3e_path)[0]}")
+                        
                         
                         r3m_materials = None
                         texture_dictionary = None
@@ -884,7 +901,7 @@ class ImportBSP(Operator, ImportHelper):
                         if r3e_data is not None and r3m_data is not None and r3t_data is not None:
                             with open(r3e_data["rpk_file_path"], 'rb') as r3e_rpk_file:
                                 r3e_rpk_file.seek(r3e_data["entity_offset_in_rpk"])
-                                instantiated_entities[i] = ImportR3E.import_r3e_entity_from_opened_file(r3e_rpk_file, r3m_materials, texture_dictionary, entity_name, context, entity_collection)
+                                instantiated_entities[i] = ImportR3E.import_r3e_entity_from_opened_file(r3e_rpk_file, r3m_materials, texture_dictionary, entity_name, context, entity_template_collection)
                         else:
                             print(f"Not all necessary data was found for r3e entity: {r3e_path}")
                     
@@ -2660,7 +2677,7 @@ class ExportBSP(Operator, ExportHelper):
                 if blender_material.blend_method != 'OPAQUE':
                     pass
                     #texture_layer.alpha_type = AlphaType.DIRECT.value
-                texture_layer.alpha_type = AlphaType.NONE.value
+                texture_layer.alpha_type = BlendMethod.NONE.value
 
                 if MaterialProperties.ARGB_ALPHA.value in node:
                     texture_layer.argb_color[0] = node[MaterialProperties.ARGB_ALPHA.value]

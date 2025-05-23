@@ -207,235 +207,219 @@ class RFShared(Operator):
             print()
     
     @staticmethod
-    def process_texture_layers(r3m_material: R3MMaterial, material: bpy.types.Material, nodes: bpy.types.Nodes, links: bpy.types.NodeLinks, bsdf: bpy.types.Node, texture_dictionary: dict[int, str], context: bpy.types.Context):
-        """
-        Given a R3MMaterial and other necessary inputs, organizes and adds the effects of each texture layer within the material.
-        """
-        specular_value = nodes.new(type="ShaderNodeValue")
-        specular_value.label = "Specular"
-        links.new(specular_value.outputs[0], bsdf.inputs[13])
+    def process_texture_layers(r3m_material: R3MMaterial, material: bpy.types.Material, 
+                           nodes: bpy.types.Nodes, links: bpy.types.NodeLinks, 
+                           bsdf: bpy.types.Node,
+                           texture_dictionary: dict[int, str], context: bpy.types.Context, debug_object_name = ""):
+        
+        material.surface_render_method = "DITHERED"
+        material.use_transparency_overlap = False
+        
+        bsdf.inputs['Base Color'].default_value = (0.0, 0.0, 0.0, 1.0)
+        bsdf.inputs['Emission Color'].default_value = (0.0, 0.0, 0.0, 1.0)
+        bsdf.inputs['Alpha'].default_value = 1.0
+        
+        specular_value_node = nodes.new(type="ShaderNodeValue")
+        specular_value_node.name = "Material_Specular"
+        specular_value_node.label = "Specular"
+        specular_value_node.outputs[0].default_value = 0.0
+        links.new(specular_value_node.outputs[0], bsdf.inputs['Specular IOR Level'])
 
-        previous_color_output = None
-        alpha_output = None
-        bump_outputs = []
-        uses_alpha = False
+        # --- Accumulator Sockets ---
+        # These will hold the current combined result for each BSDF input stream
+        # Start with 'neutral' values (black for color/emission, fully transparent for alpha if needed, or opaque)
         
+        # For Base Color stream
+        # Initialize with a black color node. If the first layer is opaque, it will replace this.
+        # If all layers are e.g. additive, the base color will remain black.
+        black_color_node = nodes.new(type="ShaderNodeRGB")
+        black_color_node.name = "Initial_Base_Color"
+        black_color_node.outputs[0].default_value = (0,0,0,1)
+        accumulated_base_color_socket = black_color_node.outputs['Color']
+
+        # For Alpha stream (overall material coverage/transparency)
+        # Initialize with fully opaque. If any layer defines transparency, this will be updated.
+        opaque_alpha_node = nodes.new(type="ShaderNodeValue")
+        opaque_alpha_node.name = "Initial_Alpha"
+        opaque_alpha_node.outputs[0].default_value = 1.0
+        accumulated_alpha_socket = opaque_alpha_node.outputs[0]
+        is_alpha_set_by_layer_zero = False
+        
+        # For Emission Color stream
+        # Initialize with a black color node. Additive layers will add to this.
+        black_emission_node = nodes.new(type="ShaderNodeRGB")
+        black_emission_node.name = "Initial_Emission_Color"
+        black_emission_node.outputs[0].default_value = (0,0,0,1)
+        accumulated_emission_color_socket = black_emission_node.outputs['Color']
+
+        
+
+
         texture_coordinates_node = nodes.new(type="ShaderNodeTexCoord")
+        # Important for mat env bump effect: This effect is special because it seems to be used only once in the entire game, and that's for water. 
+        # In all these cases, it's expected that layer 0 is a base texture layer, and layer 1 is the layer for the mat env bump. In the case that this effect is present, all other layers are ignored.
+        # The effect is also special because it messes with the uvs of another layer(effect in layer 1 messes with uv of layer 0), something that does not happen with other effects.
+        first_layer_uv_output = None
+        first_layer_tex_image_node = None
         
-        for texture_layer in r3m_material.texture_layers:
-            uvs_output = texture_coordinates_node.outputs["UV"]
-            separated_uvs_node = None
+
+        zero_strength_node = nodes.new(type="ShaderNodeValue")
+        zero_strength_node.name = "Initial_Emission_Strength"
+        zero_strength_node.outputs[0].default_value = 0.0 
+        accumulated_emission_strength_socket = zero_strength_node.outputs[0]
+
+        for i, texture_layer in enumerate(r3m_material.texture_layers):
             
             image = bpy.data.images[texture_dictionary[texture_layer.texture_id]]
-            tex_image_node = nodes.new('ShaderNodeTexImage')
+            tex_image_node: bpy.types.TextureNodeImage = nodes.new('ShaderNodeTexImage')
+            tex_image_node.name = f"Tex_Image_Layer_{i}"
             tex_image_node.image = image
-
-            alpha_value = texture_layer.argb_color[0]
-            tex_image_node[MaterialProperties.ARGB_ALPHA.value] = alpha_value
-            alpha_direct_output = nodes.new(type="ShaderNodeValue")
-            alpha_direct_output.label = f"ARGB Alpha [{image.name}]"
-            Utils.create_driver_single(alpha_direct_output.outputs[0], "argb_alpha", material, f'node_tree.nodes["{tex_image_node.name}"]["{MaterialProperties.ARGB_ALPHA.value}"]', "argb_alpha")
-            alpha_direct_output.outputs[0].default_value = alpha_value
             
-            alpha_output = alpha_direct_output.outputs[0]
+            tex_image_node[MaterialProperties.ALPHA_TYPE.value] = texture_layer.alpha_type
             
-            texture_is_bump = False
-            
-            if texture_layer.alpha_type == 1:
-                multiply_node = nodes.new(type="ShaderNodeMath")
-                multiply_node.operation = 'MULTIPLY'
-                multiply_node.label = f"Alpha Multiply [{image.name}]"
-                links.new(tex_image_node.outputs['Alpha'], multiply_node.inputs[0])
-                links.new(alpha_output, multiply_node.inputs[1])
-                alpha_output = multiply_node.outputs[0]
-                uses_alpha = True
-            elif texture_layer.alpha_type in (2, 3):
-                color_ramp_node = nodes.new(type="ShaderNodeValToRGB")
-                links.new(tex_image_node.outputs['Color'], color_ramp_node.inputs['Fac'])
-                multiply_node = nodes.new(type="ShaderNodeMath")
-                multiply_node.operation = 'MULTIPLY'
-                multiply_node.label = f"Alpha Multiply [{image.name}]"
-                links.new(color_ramp_node.outputs['Color'], multiply_node.inputs[0])
-                links.new(alpha_output, multiply_node.inputs[1])
-                alpha_output = multiply_node.outputs[0]
-                uses_alpha = True
-            
-            if texture_layer.flags & int(LayerFlag._UV_ENV.value) or texture_layer.flags & int(LayerFlag._MAT_ENV_BUMP.value):
-                
-                tex_image_node[MaterialProperties.ENVIROMENT_MAT.value] = True
-                
-                tex_image_node.image.colorspace_settings.name = 'Non-Color'
-
-                bump_multiply_node = nodes.new(type="ShaderNodeVectorMath")
-                bump_multiply_node.operation = 'MULTIPLY'
-                bump_multiply_node.label = f"Bump Multiply [{image.name}]"
-                
-                alpha_multiply_node = nodes.new(type="ShaderNodeMath")
-                alpha_multiply_node.operation = 'MULTIPLY'
-                alpha_multiply_node.label = f"Bump Alpha Multiply [{image.name}]"
-                alpha_multiply_node.inputs[1].default_value = 0.0012
-                links.new(alpha_output, alpha_multiply_node.inputs[0])
-                
-                
-                links.new(tex_image_node.outputs["Color"], bump_multiply_node.inputs[0])
-                links.new(alpha_multiply_node.outputs[0], bump_multiply_node.inputs[1])
-                
-                bump_outputs.append(bump_multiply_node.outputs[0])
-                
-                texture_is_bump = True
+            uvs_output = texture_coordinates_node.outputs["UV"]
             
             if texture_layer.flags & int(LayerFlag._UV_METAL.value):
-                tex_image_node[MaterialProperties.METAL_EFFECT_SIZE.value] = texture_layer.metal_effect_size
-                metal_effect_size = nodes.new(type="ShaderNodeValue")
-                metal_effect_size.label = "Metal Effect Size"
-                metal_effect_size.label = f"Metal Effect Size [{image.name}]"
-                Utils.create_driver_single(metal_effect_size.outputs[0], "metal_effect_size", material, f'node_tree.nodes["{tex_image_node.name}"]["{MaterialProperties.METAL_EFFECT_SIZE.value}"]', "metal_effect_size/255.0")
-                
+                tex_image_node[MaterialProperties.METAL_EFFECT_SIZE.value] = texture_layer.metal_effect_size # Store raw short m_sUVMetal
+
+                su_node = nodes.new(type="ShaderNodeValue")
+                su_node.name = f"Metal_su_L{i}"
+                su_node.label = f"Metal Divisor (su) L{i}"
+                Utils.create_driver_single(
+                    su_node.outputs[0], 
+                    "raw_sUVMetal",
+                    material, 
+                    f'node_tree.nodes["{tex_image_node.name}"]["{MaterialProperties.METAL_EFFECT_SIZE.value}"]',
+                    "max(raw_sUVMetal / 2.0, 0.0001)"
+                )
+                su_node.outputs[0].default_value = max(float(texture_layer.metal_effect_size) / 2.0, 0.0001)
+                su_socket = su_node.outputs[0]
+
                 geometry_node = nodes.new(type="ShaderNodeNewGeometry")
-                geometry_node.label = f"Geometry [{image.name}]"
-                
-                normal_node = nodes.new(type="ShaderNodeVectorMath")
-                normal_node.operation = "NORMALIZE"
-                normal_node.label = f"Normalize [{image.name}]"
-                links.new(geometry_node.outputs["Normal"], normal_node.inputs["Vector"])
-                
-                normal_separated = nodes.new(type="ShaderNodeSeparateXYZ")
-                normal_separated.label = f"Separated Normal [{image.name}]"
-                links.new(normal_node.outputs["Vector"], normal_separated.inputs["Vector"])
-                
-                absolute_node = nodes.new(type="ShaderNodeMath")
-                absolute_node.operation = "ABSOLUTE"
-                absolute_node.label = f"Absolute [{image.name}]"
-                links.new(normal_separated.outputs["Z"], absolute_node.inputs["Value"])
-                
-                #Greater Than V_S path
-                greater_than_node = nodes.new(type="ShaderNodeMath")
-                greater_than_node.operation = "GREATER_THAN"
-                greater_than_node.label = f"Greater Than [{image.name}]"
-                greater_than_node.inputs[1].default_value = 0.98
-                links.new(absolute_node.outputs["Value"], greater_than_node.inputs["Value"])
-                
-                gt_combine_xyz = nodes.new(type="ShaderNodeCombineXYZ")
-                gt_combine_xyz.label = f"Combine XYZ (GT) [{image.name}]"
-                links.new(greater_than_node.outputs[0], gt_combine_xyz.inputs["X"])
-                
-                #Less Than V_S path
-                less_than_node = nodes.new(type="ShaderNodeMath")
-                less_than_node.operation = "LESS_THAN"
-                less_than_node.label = f"Less Than [{image.name}]"
-                less_than_node.inputs[1].default_value = 0.981
-                links.new(absolute_node.outputs["Value"], less_than_node.inputs["Value"])
-                
-                y_normal_1 = nodes.new(type="ShaderNodeMath")
-                y_normal_1.operation = "MULTIPLY"
-                y_normal_1.label = f"Y Normal Multiply [{image.name}]"
-                links.new(normal_separated.outputs["Y"], y_normal_1.inputs[0])
-                links.new(less_than_node.outputs["Value"], y_normal_1.inputs[1])
-                
-                y_normal_1_flipped = nodes.new(type="ShaderNodeMath")
-                y_normal_1_flipped.operation = "MULTIPLY"
-                y_normal_1_flipped.label = f"Y Normal Flipped [{image.name}]"
-                links.new(y_normal_1.outputs[0], y_normal_1_flipped.inputs[0])
-                y_normal_1_flipped.inputs[1].default_value = -1.0
-                
-                lt_combine_xyz = nodes.new(type="ShaderNodeCombineXYZ")
-                lt_combine_xyz.label = f"Combine XYZ (LT) [{image.name}]"
-                links.new(y_normal_1_flipped.outputs[0], lt_combine_xyz.inputs["X"])
-                
-                lt_normalize = nodes.new(type="ShaderNodeVectorMath")
-                lt_normalize.operation = "NORMALIZE"
-                lt_normalize.label = f"Normalize (LT) [{image.name}]"
-                links.new(lt_combine_xyz.outputs[0], lt_normalize.inputs[0])
-                # Paths end
-                
-                v_s = nodes.new(type="ShaderNodeMix")
-                v_s.data_type = "VECTOR"
-                v_s.label = f"V_S [{image.name}]"
-                links.new(gt_combine_xyz.outputs[0], v_s.inputs["A"])
-                links.new(lt_normalize.outputs[0], v_s.inputs["B"])
-                
-                v_t = nodes.new(type="ShaderNodeVectorMath")
-                v_t.operation = "CROSS_PRODUCT"
-                v_t.label = f"V_T [{image.name}]"
-                links.new(v_s.outputs["Result"], v_t.inputs[0])
-                links.new(normal_node.outputs[0], v_t.inputs[1])
-                
-                camera_world_position = nodes.new(type="ShaderNodeVectorTransform")
-                camera_world_position.label = f"Camera World Position [{image.name}]"
-                camera_world_position.vector_type = "POINT"
-                camera_world_position.convert_from = "CAMERA"
-                camera_world_position.convert_to = "WORLD"
-                camera_world_position.inputs[0].default_value = (0.0, 0.0, 0.0)
-                
-                #V_S for U operations
-                
-                v_s_dot_1 = nodes.new(type="ShaderNodeVectorMath")
-                v_s_dot_1.operation = "DOT_PRODUCT"
-                v_s_dot_1.label = f"V_S Dot 1 [{image.name}]"
-                links.new(v_s.outputs["Result"], v_s_dot_1.inputs[0])
-                links.new(geometry_node.outputs["Position"], v_s_dot_1.inputs[1])
-                
-                v_s_dot_2 = nodes.new(type="ShaderNodeVectorMath")
-                v_s_dot_2.operation = "DOT_PRODUCT"
-                v_s_dot_2.label = f"V_S Dot 2 [{image.name}]"
-                links.new(v_s.outputs["Result"], v_s_dot_2.inputs[0])
-                links.new(camera_world_position.outputs[0], v_s_dot_2.inputs[1])
-                
-                v_s_dot_mult = nodes.new(type="ShaderNodeMath")
-                v_s_dot_mult.operation = "MULTIPLY"
-                v_s_dot_mult.label = f"V_S Dot Multiply [{image.name}]"
-                links.new(v_s_dot_2.outputs["Value"], v_s_dot_mult.inputs[0])
-                v_s_dot_mult.inputs[1].default_value = 0.8
-                
-                v_s_dot_sub = nodes.new(type="ShaderNodeMath")
-                v_s_dot_sub.operation = "SUBTRACT"
-                v_s_dot_sub.label = f"V_S Dot Subtract [{image.name}]"
-                links.new(v_s_dot_1.outputs["Value"], v_s_dot_sub.inputs[0])
-                links.new(v_s_dot_mult.outputs[0], v_s_dot_sub.inputs[1])
-                
-                v_s_dot_div = nodes.new(type="ShaderNodeMath")
-                v_s_dot_div.operation = "DIVIDE"
-                v_s_dot_div.label = f"V_S Dot Divide [{image.name}]"
-                links.new(v_s_dot_sub.outputs[0], v_s_dot_div.inputs[0])
-                links.new(metal_effect_size.outputs[0], v_s_dot_div.inputs[1])
-                
-                # V_T for V operations
-                v_t_dot_1 = nodes.new(type="ShaderNodeVectorMath")
-                v_t_dot_1.operation = "DOT_PRODUCT"
-                v_t_dot_1.label = f"V_T Dot 1 [{image.name}]"
-                links.new(v_t.outputs[0], v_t_dot_1.inputs[0])
-                links.new(geometry_node.outputs["Position"], v_t_dot_1.inputs[1])
+                geometry_node.name = f"Geom_Metal_L{i}"
+                geometry_node.label = f"Geometry Metal L{i}"
+                p_world_socket = geometry_node.outputs["Position"] 
 
-                v_t_dot_2 = nodes.new(type="ShaderNodeVectorMath")
-                v_t_dot_2.operation = "DOT_PRODUCT"
-                v_t_dot_2.label = f"V_T Dot 2 [{image.name}]"
-                links.new(v_t.outputs[0], v_t_dot_2.inputs[0])
-                links.new(camera_world_position.outputs[0], v_t_dot_2.inputs[1])
+                camera_world_pos_node = nodes.new(type="ShaderNodeVectorTransform")
+                camera_world_pos_node.name = f"CamWorldPos_Metal_L{i}"
+                camera_world_pos_node.label = f"Camera World Position [{image.name}]"
+                camera_world_pos_node.vector_type = "POINT"
+                camera_world_pos_node.convert_from = "CAMERA"
+                camera_world_pos_node.convert_to = "WORLD"
+                camera_world_pos_node.inputs[0].default_value = (0.0, 0.0, 0.0)
+                eye_world_socket = camera_world_pos_node.outputs['Vector']
 
-                v_t_dot_mult = nodes.new(type="ShaderNodeMath")
-                v_t_dot_mult.operation = "MULTIPLY"
-                v_t_dot_mult.label = f"V_T Dot Multiply [{image.name}]"
-                links.new(v_t_dot_2.outputs["Value"], v_t_dot_mult.inputs[0])
-                v_t_dot_mult.inputs[1].default_value = 0.8
+                world_face_normal_socket = geometry_node.outputs["True Normal"] 
 
-                v_t_dot_sub = nodes.new(type="ShaderNodeMath")
-                v_t_dot_sub.operation = "SUBTRACT"
-                v_t_dot_sub.label = f"V_T Dot Subtract [{image.name}]"
-                links.new(v_t_dot_1.outputs["Value"], v_t_dot_sub.inputs[0])
-                links.new(v_t_dot_mult.outputs[0], v_t_dot_sub.inputs[1])
 
-                v_t_dot_div = nodes.new(type="ShaderNodeMath")
-                v_t_dot_div.operation = "DIVIDE"
-                v_t_dot_div.label = f"V_T Dot Divide [{image.name}]"
-                links.new(v_t_dot_sub.outputs[0], v_t_dot_div.inputs[0])
-                links.new(metal_effect_size.outputs[0], v_t_dot_div.inputs[1])
+                separate_normal_node = nodes.new(type='ShaderNodeSeparateXYZ')
+                separate_normal_node.name = f"SeparateNormal_Metal_L{i}"
+                links.new(world_face_normal_socket, separate_normal_node.inputs['Vector'])
+                normal_z_socket = separate_normal_node.outputs['Z']
+                normal_y_socket = separate_normal_node.outputs['Y']
+                normal_x_socket = separate_normal_node.outputs['X']
 
-                final_metal_uv = nodes.new(type="ShaderNodeCombineXYZ")
-                final_metal_uv.label = f"Final Metal UV [{image.name}]"
-                links.new(v_s_dot_div.outputs[0], final_metal_uv.inputs["X"])
-                links.new(v_t_dot_div.outputs[0], final_metal_uv.inputs["Y"])
+                abs_normal_z_node = nodes.new(type='ShaderNodeMath')
+                abs_normal_z_node.name = f"AbsNormalZ_Metal_L{i}"
+                abs_normal_z_node.operation = 'ABSOLUTE'
+                links.new(normal_z_socket, abs_normal_z_node.inputs[0])
+
+                compare_normal_z_node = nodes.new(type='ShaderNodeMath')
+                compare_normal_z_node.name = f"CompareNormalZ_Metal_L{i}"
+                compare_normal_z_node.operation = 'GREATER_THAN'
+                links.new(abs_normal_z_node.outputs[0], compare_normal_z_node.inputs[0]) 
+                compare_normal_z_node.inputs[1].default_value = 0.98
+
+                s_world_path1_node = nodes.new(type='ShaderNodeCombineXYZ')
+                s_world_path1_node.name = f"S_World_Path1_L{i}"
+                s_world_path1_node.inputs['X'].default_value = 1.0
+
+                s_world_path2_y_neg_node = nodes.new(type='ShaderNodeMath')
+                s_world_path2_y_neg_node.operation = 'MULTIPLY'
+                links.new(normal_y_socket, s_world_path2_y_neg_node.inputs[0])
+                s_world_path2_y_neg_node.inputs[1].default_value = -1.0
+
+                s_world_path2_combine_node = nodes.new(type='ShaderNodeCombineXYZ')
+                s_world_path2_combine_node.name = f"S_World_Path2_Combine_L{i}"
+                links.new(s_world_path2_y_neg_node.outputs['Value'], s_world_path2_combine_node.inputs['X'])
+                links.new(normal_x_socket, s_world_path2_combine_node.inputs['Y'])
+
+                s_world_path2_normalize_node = nodes.new(type='ShaderNodeVectorMath')
+                s_world_path2_normalize_node.name = f"S_World_Path2_Norm_L{i}"
+                s_world_path2_normalize_node.operation = 'NORMALIZE'
+                links.new(s_world_path2_combine_node.outputs['Vector'], s_world_path2_normalize_node.inputs[0])
+
+                s_world_mix_node = nodes.new(type='ShaderNodeMix')
+                s_world_mix_node.name = f"S_World_Mix_L{i}"
+                s_world_mix_node.data_type = 'VECTOR'
+                links.new(compare_normal_z_node.outputs[0], s_world_mix_node.inputs[0])
+                links.new(s_world_path2_normalize_node.outputs['Vector'], s_world_mix_node.inputs[4])
+                links.new(s_world_path1_node.outputs['Vector'], s_world_mix_node.inputs[5])
+                s_world_socket = s_world_mix_node.outputs["Result"]
+
+                t_world_cross_node = nodes.new(type='ShaderNodeVectorMath')
+                t_world_cross_node.name = f"T_World_Cross_L{i}"
+                t_world_cross_node.operation = 'CROSS_PRODUCT'
+                links.new(s_world_socket, t_world_cross_node.inputs[0])
+                links.new(world_face_normal_socket, t_world_cross_node.inputs[1])
                 
-                uvs_output = final_metal_uv.outputs[0]
+                t_world_normalize_node = nodes.new(type='ShaderNodeVectorMath')
+                t_world_normalize_node.name = f"T_World_Normalize_L{i}"
+                t_world_normalize_node.operation = 'NORMALIZE'
+                links.new(t_world_cross_node.outputs['Vector'], t_world_normalize_node.inputs[0])
+                t_world_socket = t_world_normalize_node.outputs['Vector']
+
+
+                dot_s_p_node = nodes.new(type="ShaderNodeVectorMath"); dot_s_p_node.name=f"DotSP_Metal_L{i}"; dot_s_p_node.operation = 'DOT_PRODUCT'
+                links.new(s_world_socket, dot_s_p_node.inputs[0])
+                links.new(p_world_socket, dot_s_p_node.inputs[1])
+
+                dot_s_eye_node = nodes.new(type="ShaderNodeVectorMath"); dot_s_eye_node.name=f"DotSEye_Metal_L{i}"; dot_s_eye_node.operation = 'DOT_PRODUCT'
+                links.new(s_world_socket, dot_s_eye_node.inputs[0])
+                links.new(eye_world_socket, dot_s_eye_node.inputs[1])
+
+                mult_s_eye_08_node = nodes.new(type="ShaderNodeMath"); mult_s_eye_08_node.name=f"MultSEye08_Metal_L{i}"; mult_s_eye_08_node.operation = 'MULTIPLY'
+                links.new(dot_s_eye_node.outputs['Value'], mult_s_eye_08_node.inputs[0])
+                mult_s_eye_08_node.inputs[1].default_value = 0.8
+
+                sub_u_num_node = nodes.new(type="ShaderNodeMath"); sub_u_num_node.name=f"SubUNum_Metal_L{i}"; sub_u_num_node.operation = 'SUBTRACT'
+                links.new(dot_s_p_node.outputs['Value'], sub_u_num_node.inputs[0])
+                links.new(mult_s_eye_08_node.outputs['Value'], sub_u_num_node.inputs[1])
+
+                u_coord_node = nodes.new(type="ShaderNodeMath"); u_coord_node.name=f"U_Coord_Metal_L{i}"; u_coord_node.operation = 'DIVIDE'
+                links.new(sub_u_num_node.outputs['Value'], u_coord_node.inputs[0])
+                links.new(su_socket, u_coord_node.inputs[1])
+                u_coord_socket = u_coord_node.outputs['Value']
+
+                dot_t_p_node = nodes.new(type="ShaderNodeVectorMath"); dot_t_p_node.name=f"DotTP_Metal_L{i}"; dot_t_p_node.operation = 'DOT_PRODUCT'
+                links.new(t_world_socket, dot_t_p_node.inputs[0])
+                links.new(p_world_socket, dot_t_p_node.inputs[1])
+
+                dot_t_eye_node = nodes.new(type="ShaderNodeVectorMath"); dot_t_eye_node.name=f"DotTEye_Metal_L{i}"; dot_t_eye_node.operation = 'DOT_PRODUCT'
+                links.new(t_world_socket, dot_t_eye_node.inputs[0])
+                links.new(eye_world_socket, dot_t_eye_node.inputs[1])
+
+                mult_t_eye_08_node = nodes.new(type="ShaderNodeMath"); mult_t_eye_08_node.name=f"MultTEye08_Metal_L{i}"; mult_t_eye_08_node.operation = 'MULTIPLY'
+                links.new(dot_t_eye_node.outputs['Value'], mult_t_eye_08_node.inputs[0])
+                mult_t_eye_08_node.inputs[1].default_value = 0.8
+
+                sub_v_num_node = nodes.new(type="ShaderNodeMath"); sub_v_num_node.name=f"SubVNum_Metal_L{i}"; sub_v_num_node.operation = 'SUBTRACT'
+                links.new(dot_t_p_node.outputs['Value'], sub_v_num_node.inputs[0])
+                links.new(mult_t_eye_08_node.outputs['Value'], sub_v_num_node.inputs[1])
+
+                v_coord_node = nodes.new(type="ShaderNodeMath"); v_coord_node.name=f"V_Coord_Metal_L{i}"; v_coord_node.operation = 'DIVIDE'
+                links.new(sub_v_num_node.outputs['Value'], v_coord_node.inputs[0])
+                links.new(su_socket, v_coord_node.inputs[1])
+                v_coord_socket = v_coord_node.outputs['Value']
+
+                final_metal_uv_combine_node = nodes.new(type='ShaderNodeCombineXYZ')
+                final_metal_uv_combine_node.name = f"FinalMetalUV_L{i}"
+                final_metal_uv_combine_node.label = f"Metal UV Output L{i}"
+                links.new(u_coord_socket, final_metal_uv_combine_node.inputs['X'])
+                links.new(v_coord_socket, final_metal_uv_combine_node.inputs['Y'])
+                final_metal_uv_combine_node.inputs['Z'].default_value = 0.0
+
+                uvs_output = final_metal_uv_combine_node.outputs['Vector']
                 
             if texture_layer.flags & int(LayerFlag._UV_ROTATE.value):
                 tex_image_node[MaterialProperties.UV_ROTATION.value] = texture_layer.uv_rotation
@@ -616,57 +600,922 @@ class RFShared(Operator):
                 links.new(combine_uvs_node.outputs['Vector'], effect_adder_node.inputs[1])
                 uvs_output = effect_adder_node.outputs[0]
             
-            if uvs_output is not None:
-                links.new(uvs_output, tex_image_node.inputs['Vector'])
-            
-            if texture_is_bump == False:
-                if previous_color_output is None:
-                    # If this is the first texture, connect it directly to the BSDF
-                    links.new(tex_image_node.outputs['Color'], bsdf.inputs['Base Color'])
-                    previous_color_output = tex_image_node.outputs['Color']
-                    links.new(alpha_output, bsdf.inputs['Alpha'])
-                else:
-                    mix_rgb = nodes.new('ShaderNodeMixRGB')
-                    mix_rgb.label = f"Mix RGB [{image.name}]"
-                    mix_rgb.blend_type = 'MIX'
-                    mix_rgb.inputs['Fac'].default_value = 0.5
-                    
-                    multiply_mix_alpha_node = nodes.new(type="ShaderNodeMath")
-                    multiply_mix_alpha_node.operation = 'MULTIPLY'
-                    multiply_mix_alpha_node.label = f"Mix Alpha Multiply [{image.name}]"
-                    links.new(alpha_output, multiply_mix_alpha_node.inputs[0])
-                    multiply_mix_alpha_node.inputs[1].default_value = 0.5
-                    
-                    links.new(mix_rgb.inputs[0], multiply_mix_alpha_node.outputs[0])
-                    links.new(mix_rgb.inputs[1], previous_color_output)
-                    links.new(mix_rgb.inputs[2], tex_image_node.outputs['Color'])
-                    
+            if texture_layer.flags & int(LayerFlag._ANI_TEXTURE.value):
+                frame_num_total = float(texture_layer.animated_texture_frame/256.0)
+                tex_speed_factor = float(texture_layer.animated_texture_speed/256.0) 
 
-                    previous_color_output = mix_rgb.outputs['Color']
+                base_uv_socket = texture_coordinates_node.outputs["UV"]
+
+                def get_div_u_py(frame_count):
+                    if 4 >= frame_count: return 2.0
+                    if 16 >= frame_count: return 4.0
+                    if 64 >= frame_count: return 8.0
+                    return 16.0
+
+                def get_div_v_py(frame_count):
+                    if 2 >= frame_count: return 1.0
+                    if 8 >= frame_count: return 2.0
+                    if 32 >= frame_count: return 4.0
+                    return 8.0
                 
-                if previous_color_output is not None:
-                    links.new(bsdf.inputs['Base Color'], previous_color_output)
+                div_u_val = get_div_u_py(frame_num_total)
+                div_v_val = get_div_v_py(frame_num_total)
+
+                div_u_node = nodes.new(type="ShaderNodeValue")
+                div_u_node.name = f"SpriteDivU_L{i}"
+                div_u_node.label = f"Sprite Div U L{i}"
+                div_u_node.outputs[0].default_value = div_u_val
+                div_u_socket = div_u_node.outputs[0]
+
+                div_v_node = nodes.new(type="ShaderNodeValue")
+                div_v_node.name = f"SpriteDivV_L{i}"
+                div_v_node.label = f"Sprite Div V L{i}"
+                div_v_node.outputs[0].default_value = div_v_val
+                div_v_socket = div_v_node.outputs[0]
+                
+                time_node_sprite = nodes.new(type="ShaderNodeValue")
+                time_node_sprite.name = f"Time_Sprite_L{i}"
+                time_node_sprite.label = f"Time Sprite L{i}"
+                Utils.create_driver_single_new(
+                    target_rna_item=time_node_sprite.outputs[0],
+                    property_name_string="default_value", property_index=-1,
+                    var_name="placeholder", source_object_id=material,
+                    source_prop_datapath="name",
+                    expression="frame / 60.0 * 4"
+                )
+                r_time_socket = time_node_sprite.outputs[0]
+
+                su_animated_node = nodes.new(type="ShaderNodeMath")
+                su_animated_node.name = f"SU_Animated_L{i}"
+                su_animated_node.operation = 'MULTIPLY'
+                links.new(r_time_socket, su_animated_node.inputs[0])
+                su_animated_node.inputs[1].default_value = tex_speed_factor
+                su_animated_socket = su_animated_node.outputs['Value']
+
+                safe_frame_num_total_node = nodes.new(type="ShaderNodeMath")
+                safe_frame_num_total_node.name = f"SafeFrameNum_L{i}"
+                safe_frame_num_total_node.operation = 'MAXIMUM'
+                safe_frame_num_total_node.inputs[0].default_value = frame_num_total
+                safe_frame_num_total_node.inputs[1].default_value = 1.0
+
+                current_frame_float_node = nodes.new(type="ShaderNodeMath")
+                current_frame_float_node.name = f"CurrentFrameFloat_L{i}"
+                current_frame_float_node.operation = 'MODULO'
+                links.new(su_animated_socket, current_frame_float_node.inputs[0])
+                links.new(safe_frame_num_total_node.outputs['Value'], current_frame_float_node.inputs[1])
+
+                current_frame_int_node = nodes.new(type="ShaderNodeMath")
+                current_frame_int_node.name = f"CurrentFrameInt_L{i}"
+                current_frame_int_node.operation = 'FLOOR'
+                links.new(current_frame_float_node.outputs['Value'], current_frame_int_node.inputs[0])
+                current_frame_int_socket = current_frame_int_node.outputs['Value']
+
+                frame_mod_div_u_node = nodes.new(type="ShaderNodeMath")
+                frame_mod_div_u_node.name = f"FrameModDivU_L{i}"
+                frame_mod_div_u_node.operation = 'MODULO'
+                links.new(current_frame_int_socket, frame_mod_div_u_node.inputs[0])
+                links.new(div_u_socket, frame_mod_div_u_node.inputs[1])
+
+                add_u_node = nodes.new(type="ShaderNodeMath")
+                add_u_node.name = f"AddU_L{i}"
+                add_u_node.operation = 'DIVIDE'
+                add_u_node.use_clamp = True
+                links.new(frame_mod_div_u_node.outputs['Value'], add_u_node.inputs[0])
+                links.new(div_u_socket, add_u_node.inputs[1])
+                add_u_socket = add_u_node.outputs['Value']
+
+                frame_div_div_u_node = nodes.new(type="ShaderNodeMath")
+                frame_div_div_u_node.name = f"FrameDivDivU_L{i}"
+                frame_div_div_u_node.operation = 'DIVIDE'
+                links.new(current_frame_int_socket, frame_div_div_u_node.inputs[0])
+                links.new(div_u_socket, frame_div_div_u_node.inputs[1])
+
+                floor_row_index_node = nodes.new(type="ShaderNodeMath")
+                floor_row_index_node.name = f"FloorRowIndex_L{i}"
+                floor_row_index_node.operation = 'FLOOR'
+                links.new(frame_div_div_u_node.outputs['Value'], floor_row_index_node.inputs[0])
+
+                add_v_node = nodes.new(type="ShaderNodeMath")
+                add_v_node.name = f"AddV_L{i}"
+                add_v_node.operation = 'DIVIDE'
+                add_v_node.use_clamp = True
+                links.new(floor_row_index_node.outputs['Value'], add_v_node.inputs[0])
+                links.new(div_v_socket, add_v_node.inputs[1])
+                add_v_socket = add_v_node.outputs['Value']
+
+                scale_u_node = nodes.new(type="ShaderNodeMath")
+                scale_u_node.name = f"ScaleU_Val_L{i}"
+                scale_u_node.operation = 'DIVIDE'
+                scale_u_node.inputs[0].default_value = 1.0
+                links.new(div_u_socket, scale_u_node.inputs[1])
+                scale_u_val_socket = scale_u_node.outputs['Value']
+
+                scale_v_node = nodes.new(type="ShaderNodeMath")
+                scale_v_node.name = f"ScaleV_Val_L{i}"
+                scale_v_node.operation = 'DIVIDE'
+                scale_v_node.inputs[0].default_value = 1.0
+                links.new(div_v_socket, scale_v_node.inputs[1])
+                scale_v_val_socket = scale_v_node.outputs['Value']
+
+                uv_scaler_node = nodes.new(type='ShaderNodeCombineXYZ')
+                uv_scaler_node.name = f"UVScaler_L{i}"
+                links.new(scale_u_val_socket, uv_scaler_node.inputs['X'])
+                links.new(scale_v_val_socket, uv_scaler_node.inputs['Y'])
+                uv_scaler_node.inputs['Z'].default_value = 1.0
+
+                scaled_uv_node = nodes.new(type='ShaderNodeVectorMath')
+                scaled_uv_node.name = f"ScaledUV_L{i}"
+                scaled_uv_node.operation = 'MULTIPLY'
+                links.new(base_uv_socket, scaled_uv_node.inputs[0])
+                links.new(uv_scaler_node.outputs['Vector'], scaled_uv_node.inputs[1])
+
+                uv_translator_node = nodes.new(type='ShaderNodeCombineXYZ')
+                uv_translator_node.name = f"UVTranslator_L{i}"
+                links.new(add_u_socket, uv_translator_node.inputs['X'])
+                links.new(add_v_socket, uv_translator_node.inputs['Y'])
+                uv_translator_node.inputs['Z'].default_value = 0.0
+
+                final_animated_uv_node = nodes.new(type='ShaderNodeVectorMath')
+                final_animated_uv_node.name = f"FinalSpriteUV_L{i}"
+                final_animated_uv_node.label = f"Sprite UV L{i}"
+                final_animated_uv_node.operation = 'ADD'
+                links.new(scaled_uv_node.outputs['Vector'], final_animated_uv_node.inputs[0])
+                links.new(uv_translator_node.outputs['Vector'], final_animated_uv_node.inputs[1])
+                
+                uvs_output = final_animated_uv_node.outputs['Vector']
+            
+            # Apply uv effects
+            if uvs_output:
+                links.new(uvs_output, tex_image_node.inputs['Vector'])
+
+            # Set up ARGB tint+alpha
+            tex_image_node[f"r3m_argb_r_{i}"] = texture_layer.argb_color[1]
+            tex_image_node[f"r3m_argb_g_{i}"] = texture_layer.argb_color[2]
+            tex_image_node[f"r3m_argb_b_{i}"] = texture_layer.argb_color[3]
+            tex_image_node[f"r3m_argb_a_{i}"] = texture_layer.argb_color[0]
+            
+            r3m_rgb_tint_node = nodes.new(type="ShaderNodeRGB")
+            r3m_rgb_tint_node.name = f"R3M_RGB_Tint_Layer_{i}"
+            r3m_rgb_tint_node.label = f"R3M RGB Tint [{image.name}]"
+            
+            Utils.create_driver_single_new(
+                target_rna_item=r3m_rgb_tint_node.outputs[0],  # The OutputSocket for Color
+                property_name_string="default_value",
+                property_index=0,                              # Index 0 for Red
+                var_name="r_val",
+                source_object_id=material,
+                source_prop_datapath=f'node_tree.nodes["{tex_image_node.name}"]["r3m_argb_r_{i}"]',
+                expression="r_val"
+            )
+            r3m_rgb_tint_node.outputs[0].default_value[0] = texture_layer.argb_color[1]
+
+            Utils.create_driver_single_new(
+                target_rna_item=r3m_rgb_tint_node.outputs[0],  # The OutputSocket for Color
+                property_name_string="default_value",
+                property_index=1,                              # Index 1 for Green
+                var_name="g_val",
+                source_object_id=material,
+                source_prop_datapath=f'node_tree.nodes["{tex_image_node.name}"]["r3m_argb_g_{i}"]',
+                expression="g_val"
+            )
+            r3m_rgb_tint_node.outputs[0].default_value[1] = texture_layer.argb_color[2]
+
+            Utils.create_driver_single_new(
+                target_rna_item=r3m_rgb_tint_node.outputs[0],  # The OutputSocket for Color
+                property_name_string="default_value",
+                property_index=2,                              # Index 2 for Blue
+                var_name="b_val",
+                source_object_id=material,
+                source_prop_datapath=f'node_tree.nodes["{tex_image_node.name}"]["r3m_argb_b_{i}"]',
+                expression="b_val"
+            )
+            r3m_rgb_tint_node.outputs[0].default_value[2] = texture_layer.argb_color[3]
+            
+            # Alpha component, separated.
+            r3m_alpha_node = nodes.new(type="ShaderNodeValue")
+            r3m_alpha_node.name = f"R3M_Alpha_Layer_{i}"
+            r3m_alpha_node.label = f"R3M ARGB Alpha [{image.name}]"
+            Utils.create_driver_single_new(
+                target_rna_item=r3m_alpha_node.outputs[0],
+                property_name_string="default_value",
+                property_index=-1,
+                var_name="a_val",
+                source_object_id=material,
+                source_prop_datapath=f'node_tree.nodes["{tex_image_node.name}"]["r3m_argb_a_{i}"]',
+                expression="a_val"
+            )
+            r3m_alpha_node.outputs[0].default_value = texture_layer.argb_color[0]
+
+            tinted_texture_color_node = nodes.new(type='ShaderNodeMixRGB')
+            tinted_texture_color_node.name = f"Tinted_Tex_Color_Layer_{i}"
+            tinted_texture_color_node.label = f"Tinted Texture [{image.name}]"
+            tinted_texture_color_node.blend_type = 'MULTIPLY'
+            tinted_texture_color_node.inputs['Fac'].default_value = 1.0
+            links.new(tex_image_node.outputs['Color'], tinted_texture_color_node.inputs['Color1'])
+            links.new(r3m_rgb_tint_node.outputs['Color'], tinted_texture_color_node.inputs['Color2'])
+            
+            # At this point, tinted_texture_color_node represents the texture color already tinted by ARGB
+            current_layer_tinted_color_socket = tinted_texture_color_node.outputs['Color']
+            
+            # Will skip other effects if present.
+            if texture_layer.flags & int(LayerFlag._MAT_ENV_BUMP.value): 
+                sampled_dudv_color_socket = tex_image_node.outputs['Color']
+                separate_rgb_dudv_node = nodes.new(type='ShaderNodeSeparateRGB')
+                separate_rgb_dudv_node.name = f"Separate_DuDv_{tex_image_node.name}"
+                links.new(sampled_dudv_color_socket, separate_rgb_dudv_node.inputs['Image'])
+
+                math_subtract_r_node = nodes.new(type='ShaderNodeMath')
+                math_subtract_r_node.name = f"Sub_R_DuDv_{tex_image_node.name}"
+                math_subtract_r_node.operation = 'SUBTRACT'
+                links.new(separate_rgb_dudv_node.outputs['R'], math_subtract_r_node.inputs[0])
+                math_subtract_r_node.inputs[1].default_value = 0.5
+                du_unscaled_socket = math_subtract_r_node.outputs['Value']
+
+                math_subtract_g_node = nodes.new(type='ShaderNodeMath')
+                math_subtract_g_node.name = f"Sub_G_DuDv_{tex_image_node.name}"
+                math_subtract_g_node.operation = 'SUBTRACT'
+                links.new(separate_rgb_dudv_node.outputs['G'], math_subtract_g_node.inputs[0])
+                math_subtract_g_node.inputs[1].default_value = 0.5
+                dv_unscaled_socket = math_subtract_g_node.outputs['Value']
+
+                time_node_for_bumpfactor = nodes.new(type="ShaderNodeValue")
+                time_node_for_bumpfactor.name = f"Time_For_BumpFactor_{tex_image_node.name}"
+                time_node_for_bumpfactor.label = "Time (Anim)"
+                
+                Utils.create_driver_single_new(
+                    target_rna_item=time_node_for_bumpfactor.outputs[0],
+                    property_name_string="default_value",
+                    property_index=-1,
+                    var_name="frame",
+                    source_object_id=material,
+                    source_prop_datapath=f'name',
+                    expression="frame / 60.0"
+                )
+                game_time_socket = time_node_for_bumpfactor.outputs[0]
+
+                angle_node = nodes.new(type="ShaderNodeMath")
+                angle_node.name = f"Angle_BumpFactor_{tex_image_node.name}"
+                angle_node.operation = 'MULTIPLY'
+                links.new(game_time_socket, angle_node.inputs[0])
+                angle_node.inputs[1].default_value = 3.0
+
+                cos_angle_socket = nodes.new(type="ShaderNodeMath")
+                cos_angle_socket.name = f"Cos_BumpFactor_{tex_image_node.name}"
+                cos_angle_socket.operation = 'COSINE'
+                links.new(angle_node.outputs['Value'], cos_angle_socket.inputs[0])
+                cos_angle_socket = cos_angle_socket.outputs['Value']
+
+                sin_angle_socket = nodes.new(type="ShaderNodeMath")
+                sin_angle_socket.name = f"Sin_BumpFactor_{tex_image_node.name}"
+                sin_angle_socket.operation = 'SINE'
+                links.new(angle_node.outputs['Value'], sin_angle_socket.inputs[0])
+                sin_angle_socket = sin_angle_socket.outputs['Value']
+
+                r_val_node = nodes.new(type="ShaderNodeValue")
+                r_val_node.name = f"R_Val_BumpFactor_{tex_image_node.name}"
+                r_val_node.outputs[0].default_value = 0.01
+                r_socket = r_val_node.outputs[0]
+
+                m00_node = nodes.new(type="ShaderNodeMath")
+                m00_node.name = f"m00_BumpFactor_{tex_image_node.name}"
+                m00_node.operation = 'MULTIPLY'
+                links.new(r_socket, m00_node.inputs[0])
+                links.new(cos_angle_socket, m00_node.inputs[1])
+                m00_socket = m00_node.outputs['Value']
+
+                m01_intermediate_node = nodes.new(type="ShaderNodeMath")
+                m01_intermediate_node.name = f"m01_Inter_BumpFactor_{tex_image_node.name}"
+                m01_intermediate_node.operation = 'MULTIPLY'
+                links.new(r_socket, m01_intermediate_node.inputs[0])
+                links.new(sin_angle_socket, m01_intermediate_node.inputs[1])
+                
+                m01_node = nodes.new(type="ShaderNodeMath")
+                m01_node.name = f"m01_BumpFactor_{tex_image_node.name}"
+                m01_node.operation = 'MULTIPLY'
+                links.new(m01_intermediate_node.outputs['Value'], m01_node.inputs[0])
+                m01_node.inputs[1].default_value = -1.0
+                m01_socket = m01_node.outputs['Value']
+
+                m10_node = nodes.new(type="ShaderNodeMath")
+                m10_node.name = f"m10_BumpFactor_{tex_image_node.name}"
+                m10_node.operation = 'MULTIPLY'
+                links.new(r_socket, m10_node.inputs[0])
+                links.new(sin_angle_socket, m10_node.inputs[1])
+                m10_socket = m10_node.outputs['Value']
+
+                m11_socket = m00_socket 
+
+                term_du_1_node = nodes.new(type="ShaderNodeMath")
+                term_du_1_node.name = f"TermDU1_Bump_{tex_image_node.name}"
+                term_du_1_node.operation = 'MULTIPLY'
+                links.new(du_unscaled_socket, term_du_1_node.inputs[0])
+                links.new(m00_socket, term_du_1_node.inputs[1])
+
+                term_du_2_node = nodes.new(type="ShaderNodeMath")
+                term_du_2_node.name = f"TermDU2_Bump_{tex_image_node.name}"
+                term_du_2_node.operation = 'MULTIPLY'
+                links.new(dv_unscaled_socket, term_du_2_node.inputs[0])
+                links.new(m01_socket, term_du_2_node.inputs[1])
+
+                final_animated_du_offset_node = nodes.new(type="ShaderNodeMath")
+                final_animated_du_offset_node.name = f"FinalDU_Bump_{tex_image_node.name}"
+                final_animated_du_offset_node.operation = 'ADD'
+                links.new(term_du_1_node.outputs['Value'], final_animated_du_offset_node.inputs[0])
+                links.new(term_du_2_node.outputs['Value'], final_animated_du_offset_node.inputs[1])
+                final_animated_du_offset_socket = final_animated_du_offset_node.outputs['Value']
+
+                term_dv_1_node = nodes.new(type="ShaderNodeMath")
+                term_dv_1_node.name = f"TermDV1_Bump_{tex_image_node.name}"
+                term_dv_1_node.operation = 'MULTIPLY'
+                links.new(du_unscaled_socket, term_dv_1_node.inputs[0])
+                links.new(m10_socket, term_dv_1_node.inputs[1])
+
+                term_dv_2_node = nodes.new(type="ShaderNodeMath")
+                term_dv_2_node.name = f"TermDV2_Bump_{tex_image_node.name}"
+                term_dv_2_node.operation = 'MULTIPLY'
+                links.new(dv_unscaled_socket, term_dv_2_node.inputs[0])
+                links.new(m11_socket, term_dv_2_node.inputs[1])
+
+                final_animated_dv_offset_node = nodes.new(type="ShaderNodeMath")
+                final_animated_dv_offset_node.name = f"FinalDV_Bump_{tex_image_node.name}"
+                final_animated_dv_offset_node.operation = 'ADD'
+                links.new(term_dv_1_node.outputs['Value'], final_animated_dv_offset_node.inputs[0])
+                links.new(term_dv_2_node.outputs['Value'], final_animated_dv_offset_node.inputs[1])
+                final_animated_dv_offset_socket = final_animated_dv_offset_node.outputs['Value']
+
+                final_uv_perturbation_offset_node = nodes.new(type='ShaderNodeCombineXYZ')
+                final_uv_perturbation_offset_node.name = f"Final_UV_Perturbation_Vec_{tex_image_node.name}"
+                final_uv_perturbation_offset_node.label = "UV Perturbation Offset"
+                links.new(final_animated_du_offset_socket, final_uv_perturbation_offset_node.inputs['X'])
+                links.new(final_animated_dv_offset_socket, final_uv_perturbation_offset_node.inputs['Y'])
+                final_uv_perturbation_offset_node.inputs['Z'].default_value = 0.0 # UVs are 2D
+
+                original_target_input_socket = None
+                link_to_modify = None
+
+                for link_obj in list(first_layer_uv_output.links):
+                    if link_obj.to_node == first_layer_tex_image_node and \
+                    link_obj.to_socket == first_layer_tex_image_node.inputs['Vector']:
+                        original_target_input_socket = link_obj.to_socket
+                        link_to_modify = link_obj
+                        break
+                
+                if not original_target_input_socket or not link_to_modify:
+                    print(f"Error: 'first_layer_uv_output' is not currently connected to the 'Vector' input of '{first_layer_tex_image_node.name}'. Cannot insert perturbation.")
+                else:
+                    links.remove(link_to_modify)
+
+                    perturbed_uv_add_node = nodes.new(type='ShaderNodeVectorMath')
+                    perturbed_uv_add_node.name = f"Add_Perturbation_to_{first_layer_uv_output.node.name}_UV"
+                    perturbed_uv_add_node.label = "Add ENV_BUMP UV Offset"
+                    perturbed_uv_add_node.operation = 'ADD'
+
+                    links.new(first_layer_uv_output, perturbed_uv_add_node.inputs[0])
+
+                    links.new(final_uv_perturbation_offset_node.outputs['Vector'], perturbed_uv_add_node.inputs[1])
+
+                    new_conjoined_uv_output_socket = perturbed_uv_add_node.outputs['Vector']
+
+                    links.new(new_conjoined_uv_output_socket, original_target_input_socket)
+
+                    break
+            
+            if texture_layer.flags & int(LayerFlag._UV_GRADIENT_ALPHA_UV.value):
+
+                gradient_params_short = texture_layer.gradient_alpha
+
+                # Initial gradient value
+                gradient_param_node = nodes.new(type="ShaderNodeValue")
+                gradient_param_node.name = f"GradientShort_L{i}"
+                gradient_param_node.label = f"Gradient Param Raw L{i}"
+                gradient_param_node.outputs[0].default_value = float(gradient_params_short)
+                raw_short_socket = gradient_param_node.outputs[0]
+
+                # By dividing the number by 256 and flooring it after, only the higher 8 bits of it remain
+                div_by_256_for_u_node = nodes.new(type="ShaderNodeMath")
+                div_by_256_for_u_node.name = f"GradDiv256_U_L{i}"
+                div_by_256_for_u_node.operation = 'DIVIDE'
+                links.new(raw_short_socket, div_by_256_for_u_node.inputs[0])
+                div_by_256_for_u_node.inputs[1].default_value = 256.0
+                
+                control_u_byte_node = nodes.new(type="ShaderNodeMath")
+                control_u_byte_node.name = f"ControlUByte_L{i}"
+                control_u_byte_node.operation = 'FLOOR'
+                links.new(div_by_256_for_u_node.outputs['Value'], control_u_byte_node.inputs[0])
+                control_u_byte_socket = control_u_byte_node.outputs['Value']
+
+                # By dividing the number by 256 using modulo, only the lower 8 bits of it remain
+                control_v_byte_node = nodes.new(type="ShaderNodeMath")
+                control_v_byte_node.name = f"ControlVByte_L{i}"
+                control_v_byte_node.operation = 'MODULO'
+                links.new(raw_short_socket, control_v_byte_node.inputs[0])
+                control_v_byte_node.inputs[1].default_value = 256.0
+                control_v_byte_socket = control_v_byte_node.outputs['Value']
+                
+                # At this point, both bytes for U and V are ready. They represent the raw gradient alpha value for each coordinate
+                
+                
+                param_u_sub_node = nodes.new(type="ShaderNodeMath")
+                param_u_sub_node.operation = 'SUBTRACT'
+                links.new(control_u_byte_socket, param_u_sub_node.inputs[0])
+                param_u_sub_node.inputs[1].default_value = 100.0
+                param_u_div_node = nodes.new(type="ShaderNodeMath")
+                param_u_div_node.operation = 'DIVIDE'
+                links.new(param_u_sub_node.outputs['Value'], param_u_div_node.inputs[0])
+                param_u_div_node.inputs[1].default_value = 25.0
+                gradient_param_u_socket = param_u_div_node.outputs['Value']
+
+                param_v_sub_node = nodes.new(type="ShaderNodeMath")
+                param_v_sub_node.operation = 'SUBTRACT'
+                links.new(control_v_byte_socket, param_v_sub_node.inputs[0])
+                param_v_sub_node.inputs[1].default_value = 100.0
+                param_v_div_node = nodes.new(type="ShaderNodeMath")
+                param_v_div_node.operation = 'DIVIDE'
+                links.new(param_v_sub_node.outputs['Value'], param_v_div_node.inputs[0])
+                param_v_div_node.inputs[1].default_value = 25.0
+                gradient_param_v_socket = param_v_div_node.outputs['Value']
+
+                # At this point, v_su for U and V has been calculated and is available through the exposed sockets.
+                
+                static_uv_input_socket = texture_coordinates_node.outputs["UV"]
+                separate_static_uv_node = nodes.new(type='ShaderNodeSeparateXYZ')
+                separate_static_uv_node.name = f"SeparateStaticUV_Grad_L{i}"
+                links.new(static_uv_input_socket, separate_static_uv_node.inputs['Vector'])
+                static_u_coord_socket = separate_static_uv_node.outputs['X']
+                original_static_v_coord_socket = separate_static_uv_node.outputs['Y']
+
+                invert_v_node = nodes.new(type="ShaderNodeMath")
+                invert_v_node.name = f"Invert_StaticV_Grad_L{i}"
+                invert_v_node.operation = 'SUBTRACT'
+                invert_v_node.inputs[0].default_value = 1.0
+                links.new(original_static_v_coord_socket, invert_v_node.inputs[1])
+                
+                static_v_coord_socket = invert_v_node.outputs['Value']
+                
+                # At this point, individual U and V original coordinates are available too.
+                
+                u_alpha_component_socket = nodes.new(type="ShaderNodeValue")
+                u_alpha_component_socket.outputs[0].default_value = 1.0
+                u_alpha_component_socket = u_alpha_component_socket.outputs[0]
+                if texture_layer.flags & int(LayerFlag._UV_GRADIENT_ALPHA_U.value):
+                    
+                    # Is parameter U less than 0?
+                    is_param_u_neg_node = nodes.new(type="ShaderNodeMath")
+                    is_param_u_neg_node.operation = 'LESS_THAN'
+                    links.new(gradient_param_u_socket, is_param_u_neg_node.inputs[0]); is_param_u_neg_node.inputs[1].default_value = 0.0
+                    
+                    # The reason for the absolute node is that this will ever only be used when the parameter is negative. Since originally we would negate it again to turn it positive, absolute is a shortcut
+                    abs_grad_param_u_node = nodes.new(type="ShaderNodeMath")
+                    abs_grad_param_u_node.operation = 'ABSOLUTE'
+                    links.new(gradient_param_u_socket, abs_grad_param_u_node.inputs[0])
+                    safe_abs_grad_param_u_node = nodes.new(type="ShaderNodeMath")
+                    safe_abs_grad_param_u_node.operation = 'MAXIMUM'; links.new(abs_grad_param_u_node.outputs['Value'], safe_abs_grad_param_u_node.inputs[0]); safe_abs_grad_param_u_node.inputs[1].default_value = 0.0001
+
+                    # uv / v_us(U) division
+                    u_raw_div_node = nodes.new(type="ShaderNodeMath")
+                    u_raw_div_node.operation = 'DIVIDE'
+                    links.new(static_u_coord_socket, u_raw_div_node.inputs[0])
+                    links.new(gradient_param_u_socket, u_raw_div_node.inputs[1])
+                    u_raw_socket = u_raw_div_node.outputs['Value']
+
+                    # (1/ -v_su) here
+                    offset_val_u_node = nodes.new(type="ShaderNodeMath")
+                    offset_val_u_node.operation = 'DIVIDE'
+                    offset_val_u_node.inputs[0].default_value = 1.0
+                    links.new(safe_abs_grad_param_u_node.outputs['Value'], offset_val_u_node.inputs[1])
+
+                    u_conditional_add_node = nodes.new(type="ShaderNodeMath")
+                    u_conditional_add_node.operation = 'ADD'
+                    links.new(u_raw_socket, u_conditional_add_node.inputs[0])
+                    offset_mult_by_cond_u_node = nodes.new(type="ShaderNodeMath")
+                    offset_mult_by_cond_u_node.operation = 'MULTIPLY'
+                    links.new(offset_val_u_node.outputs['Value'], offset_mult_by_cond_u_node.inputs[0])
+                    links.new(is_param_u_neg_node.outputs[0], offset_mult_by_cond_u_node.inputs[1])
+                    # Only add the offset if parameter is negative.
+                    links.new(offset_mult_by_cond_u_node.outputs['Value'], u_conditional_add_node.inputs[1])
+                    
+                    u_clamped_alpha_node = nodes.new(type="ShaderNodeClamp")
+                    links.new(u_conditional_add_node.outputs['Value'], u_clamped_alpha_node.inputs['Value'])
+                    u_clamped_alpha_node.inputs['Min'].default_value = 0.0
+                    u_clamped_alpha_node.inputs['Max'].default_value = 1.0
+                    u_alpha_component_socket = u_clamped_alpha_node
+                    u_alpha_component_socket = u_clamped_alpha_node.outputs['Result']
+
+                v_alpha_component_socket = nodes.new(type="ShaderNodeValue")
+                v_alpha_component_socket.outputs[0].default_value = 1.0
+                v_alpha_component_socket = v_alpha_component_socket.outputs[0]
+                
+                if texture_layer.flags & int(LayerFlag._UV_GRADIENT_ALPHA_V.value):
+                    
+                    # Is parameter V less than 0?
+                    is_param_v_neg_node = nodes.new(type="ShaderNodeMath")
+                    is_param_v_neg_node.operation = 'LESS_THAN'
+                    links.new(gradient_param_v_socket, is_param_v_neg_node.inputs[0]); is_param_v_neg_node.inputs[1].default_value = 0.0
+                    
+                    abs_grad_param_v_node = nodes.new(type="ShaderNodeMath")
+                    abs_grad_param_v_node.operation = 'ABSOLUTE'; links.new(gradient_param_v_socket, abs_grad_param_v_node.inputs[0])
+                    safe_abs_grad_param_v_node = nodes.new(type="ShaderNodeMath")
+                    safe_abs_grad_param_v_node.operation = 'MAXIMUM'; links.new(abs_grad_param_v_node.outputs['Value'], safe_abs_grad_param_v_node.inputs[0]); safe_abs_grad_param_v_node.inputs[1].default_value = 0.0001
+                    
+                    v_raw_div_node = nodes.new(type="ShaderNodeMath")
+                    v_raw_div_node.operation = 'DIVIDE'; links.new(static_v_coord_socket, v_raw_div_node.inputs[0]); links.new(gradient_param_v_socket, v_raw_div_node.inputs[1])
+                    v_raw_socket = v_raw_div_node.outputs['Value']
+                    offset_val_v_node = nodes.new(type="ShaderNodeMath")
+                    offset_val_v_node.operation = 'DIVIDE'; offset_val_v_node.inputs[0].default_value = 1.0; links.new(safe_abs_grad_param_v_node.outputs['Value'], offset_val_v_node.inputs[1])
+                    offset_mult_by_cond_v_node = nodes.new(type="ShaderNodeMath")
+                    offset_mult_by_cond_v_node.operation = 'MULTIPLY'; links.new(offset_val_v_node.outputs['Value'], offset_mult_by_cond_v_node.inputs[0]); links.new(is_param_v_neg_node.outputs[0], offset_mult_by_cond_v_node.inputs[1])
+                    v_conditional_add_node = nodes.new(type="ShaderNodeMath")
+                    v_conditional_add_node.operation = 'ADD'; links.new(v_raw_socket, v_conditional_add_node.inputs[0]); links.new(offset_mult_by_cond_v_node.outputs['Value'], v_conditional_add_node.inputs[1])
+                    v_clamped_alpha_node = nodes.new(type="ShaderNodeClamp")
+                    links.new(v_conditional_add_node.outputs['Value'], v_clamped_alpha_node.inputs['Value']); v_clamped_alpha_node.inputs['Min'].default_value = 0.0; v_clamped_alpha_node.inputs['Max'].default_value = 1.0
+                    v_alpha_component_socket = v_clamped_alpha_node
+                    v_alpha_component_socket = v_clamped_alpha_node.outputs['Result']
+
+                
+
+                combined_gradient_alpha_node = nodes.new(type="ShaderNodeMath")
+                combined_gradient_alpha_node.name = f"CombinedGradientAlpha_L{i}"
+                combined_gradient_alpha_node.label = f"Combined Gradient Alpha L{i}"
+                combined_gradient_alpha_node.operation = 'MULTIPLY'
+                combined_gradient_alpha_node.use_clamp = True
+                links.new(u_alpha_component_socket, combined_gradient_alpha_node.inputs[0])
+                links.new(v_alpha_component_socket, combined_gradient_alpha_node.inputs[1])
+                
+                gradient_effect_output_socket = combined_gradient_alpha_node.outputs['Value']
+
+                conjoined_alpha_node = nodes.new(type="ShaderNodeMath")
+                conjoined_alpha_node.name = f"Conjoined_R3M_Gradient_Alpha_L{i}"
+                conjoined_alpha_node.label = f"R3M+Gradient Alpha L{i}"
+                conjoined_alpha_node.operation = 'MULTIPLY'
+                conjoined_alpha_node.use_clamp = True
+                links.new(r3m_alpha_node.outputs[0], conjoined_alpha_node.inputs[0])
+                links.new(gradient_effect_output_socket, conjoined_alpha_node.inputs[1])
+
+                r3m_alpha_node = conjoined_alpha_node 
+            
+            alpha_for_blend_factor = tex_image_node.outputs['Alpha']
+            
+
+            animated_flicker_alpha_0_1_socket = None
+
+            if texture_layer.flags & int(LayerFlag._ANI_ALPHA_FLICKER.value):
+
+                flicker_speed_style_node = nodes.new(type="ShaderNodeValue")
+                flicker_speed_style_node.name = f"FlickerSpeedStyle_L{i}"
+                flicker_speed_style_node.label = f"Flicker Speed/Style L{i}"
+                
+                flicker_speed_style_node.outputs[0].default_value = float(texture_layer.alpha_flicker_rate)
+                su_socket = flicker_speed_style_node.outputs[0]
+
+                flicker_range_node = nodes.new(type="ShaderNodeValue")
+                flicker_range_node.name = f"FlickerRangeRaw_L{i}"
+                flicker_range_node.label = f"Flicker Range Raw L{i}"
+                flicker_range_node.outputs[0].default_value = float(texture_layer.alpha_flicker_animation)
+                range_raw_socket = flicker_range_node.outputs[0]
+                
+                divide_by_256_node = nodes.new(type="ShaderNodeMath")
+                divide_by_256_node.name = f"FlickerDiv256_L{i}"
+                divide_by_256_node.operation = 'DIVIDE'
+                links.new(range_raw_socket, divide_by_256_node.inputs[0])
+                divide_by_256_node.inputs[1].default_value = 256.0
+                
+                start_alpha_byte_node = nodes.new(type="ShaderNodeMath")
+                start_alpha_byte_node.name = f"FlickerStartByte_L{i}"
+                start_alpha_byte_node.operation = 'FLOOR'
+                links.new(divide_by_256_node.outputs['Value'], start_alpha_byte_node.inputs[0])
+                start_alpha_byte_socket = start_alpha_byte_node.outputs['Value']
+
+                end_alpha_byte_node = nodes.new(type="ShaderNodeMath")
+                end_alpha_byte_node.name = f"FlickerEndByte_L{i}"
+                end_alpha_byte_node.operation = 'MODULO'
+                links.new(range_raw_socket, end_alpha_byte_node.inputs[0])
+                end_alpha_byte_node.inputs[1].default_value = 256.0
+                end_alpha_byte_socket = end_alpha_byte_node.outputs['Value']
+                
+                se_sub_node = nodes.new(type="ShaderNodeMath")
+                se_sub_node.name = f"FlickerAmp_L{i}"
+                se_sub_node.operation = 'SUBTRACT'
+                links.new(end_alpha_byte_socket, se_sub_node.inputs[0])
+                links.new(start_alpha_byte_socket, se_sub_node.inputs[1])
+                se_sub_socket = se_sub_node.outputs['Value']
+
+                time_node_flicker = nodes.new(type="ShaderNodeValue")
+                time_node_flicker.name = f"Time_Flicker_L{i}"
+                time_node_flicker.label = f"Time Flicker L{i}"
+                
+                Utils.create_driver_single_new(
+                    target_rna_item=time_node_flicker.outputs[0],
+                    property_name_string="default_value", property_index=-1,
+                    var_name="placeholder", source_object_id=material,
+                    source_prop_datapath="name",
+                    expression="frame / 60.0" 
+                )
+                r_time_socket = time_node_flicker.outputs[0]
+
+
+                su_scaled_time_node_sin = nodes.new(type="ShaderNodeMath")
+                su_scaled_time_node_sin.operation = 'MULTIPLY'
+                links.new(r_time_socket, su_scaled_time_node_sin.inputs[0])
+                links.new(su_socket, su_scaled_time_node_sin.inputs[1])
+                
+                sin_val_node = nodes.new(type="ShaderNodeMath")
+                sin_val_node.operation = 'SINE'
+                links.new(su_scaled_time_node_sin.outputs['Value'], sin_val_node.inputs[0])
+
+                se_sub_half_node_sin = nodes.new(type="ShaderNodeMath")
+                se_sub_half_node_sin.operation = 'DIVIDE'
+                links.new(se_sub_socket, se_sub_half_node_sin.inputs[0])
+                se_sub_half_node_sin.inputs[1].default_value = 2.0
+                
+                term1_sin_node = nodes.new(type="ShaderNodeMath")
+                term1_sin_node.operation = 'MULTIPLY'
+                links.new(sin_val_node.outputs['Value'], term1_sin_node.inputs[0])
+                links.new(se_sub_half_node_sin.outputs['Value'], term1_sin_node.inputs[1])
+                
+                add1_sin_node = nodes.new(type="ShaderNodeMath")
+                add1_sin_node.operation = 'ADD'
+                links.new(term1_sin_node.outputs['Value'], add1_sin_node.inputs[0])
+                links.new(se_sub_half_node_sin.outputs['Value'], add1_sin_node.inputs[1])
+                
+                result_sin_flicker_0_255_node = nodes.new(type="ShaderNodeMath")
+                result_sin_flicker_0_255_node.operation = 'ADD'
+                links.new(add1_sin_node.outputs['Value'], result_sin_flicker_0_255_node.inputs[0])
+                links.new(start_alpha_byte_socket, result_sin_flicker_0_255_node.inputs[1])
+                
+                neg_su_node_lin = nodes.new(type="ShaderNodeMath")
+                neg_su_node_lin.operation = 'MULTIPLY'
+                links.new(su_socket, neg_su_node_lin.inputs[0])
+                neg_su_node_lin.inputs[1].default_value = -1.0 
+                
+                term1_lin_node = nodes.new(type="ShaderNodeMath")
+                term1_lin_node.operation = 'MULTIPLY'
+                links.new(r_time_socket, term1_lin_node.inputs[0])
+                links.new(neg_su_node_lin.outputs['Value'], term1_lin_node.inputs[1])
+                
+                term2_lin_node = nodes.new(type="ShaderNodeMath")
+                term2_lin_node.operation = 'MULTIPLY'
+                links.new(term1_lin_node.outputs['Value'], term2_lin_node.inputs[0])
+                term2_lin_node.inputs[1].default_value = 200.0
+                
+                safe_se_sub_node_lin = nodes.new(type="ShaderNodeMath")
+                safe_se_sub_node_lin.operation = 'MAXIMUM'
+                links.new(se_sub_socket, safe_se_sub_node_lin.inputs[0])
+                safe_se_sub_node_lin.inputs[1].default_value = 1.0 
+
+                modulo_lin_node = nodes.new(type="ShaderNodeMath")
+                modulo_lin_node.operation = 'MODULO'
+                links.new(term2_lin_node.outputs['Value'], modulo_lin_node.inputs[0])
+                links.new(safe_se_sub_node_lin.outputs['Value'], modulo_lin_node.inputs[1])
+                
+                result_lin_flicker_0_255_node = nodes.new(type="ShaderNodeMath")
+                result_lin_flicker_0_255_node.operation = 'ADD'
+                links.new(modulo_lin_node.outputs['Value'], result_lin_flicker_0_255_node.inputs[0])
+                links.new(start_alpha_byte_socket, result_lin_flicker_0_255_node.inputs[1])
+
+                is_su_negative_node = nodes.new(type="ShaderNodeMath")
+                is_su_negative_node.name = f"IsSUNegative_L{i}"
+                is_su_negative_node.operation = 'LESS_THAN'
+                links.new(su_socket, is_su_negative_node.inputs[0])
+                is_su_negative_node.inputs[1].default_value = 0.0
+                
+                select_flicker_type_node = nodes.new(type="ShaderNodeMix") 
+                select_flicker_type_node.name = f"SelectFlickerPath_L{i}"
+                select_flicker_type_node.data_type = 'FLOAT'
+                links.new(is_su_negative_node.outputs[0], select_flicker_type_node.inputs[0])
+                links.new(result_sin_flicker_0_255_node.outputs['Value'], select_flicker_type_node.inputs[2])
+                links.new(result_lin_flicker_0_255_node.outputs['Value'], select_flicker_type_node.inputs[3])
+                
+                animated_flicker_value_0_255_socket = select_flicker_type_node.outputs[0]
+                
+                normalize_anim_flicker_node = nodes.new(type="ShaderNodeMath")
+                normalize_anim_flicker_node.name = f"NormAnimFlicker_L{i}"
+                normalize_anim_flicker_node.operation = 'DIVIDE'
+                links.new(animated_flicker_value_0_255_socket, normalize_anim_flicker_node.inputs[0])
+                normalize_anim_flicker_node.inputs[1].default_value = 255.0
+                
+                final_flicker_modulation_node = nodes.new(type="ShaderNodeMath")
+                final_flicker_modulation_node.name = f"ModulateFlickerByARGB_L{i}"
+                final_flicker_modulation_node.operation = 'MULTIPLY'
+                final_flicker_modulation_node.use_clamp = True
+                links.new(normalize_anim_flicker_node.outputs['Value'], final_flicker_modulation_node.inputs[0])
+                
+                links.new(r3m_alpha_node.outputs[0], final_flicker_modulation_node.inputs[1]) 
+                
+                animated_flicker_alpha_0_1_socket = final_flicker_modulation_node.outputs['Value']
+            else:
+                animated_flicker_alpha_0_1_socket = r3m_alpha_node.outputs[0]
+            
+            final_alpha_factor_multiply_node = nodes.new(type="ShaderNodeMath")
+            final_alpha_factor_multiply_node.name = f"Final_Blend_Factor_L{i}"
+            final_alpha_factor_multiply_node.label = f"Effective Blend Alpha L{i}"
+            final_alpha_factor_multiply_node.operation = 'MULTIPLY'
+            final_alpha_factor_multiply_node.use_clamp = True # Ensure result is 0-1
+            
+            links.new(alpha_for_blend_factor, final_alpha_factor_multiply_node.inputs[0])
+
+            links.new(animated_flicker_alpha_0_1_socket, final_alpha_factor_multiply_node.inputs[1])
+
+            alpha_for_blend_factor = final_alpha_factor_multiply_node.outputs['Value']
+            
+            current_blend_op_type = texture_layer.alpha_type
+
+            if i == 0 and not is_alpha_set_by_layer_zero:
+                first_layer_uv_output = uvs_output
+                first_layer_tex_image_node = tex_image_node
+                if current_blend_op_type == BlendMethod.OPAQUE.value:
+                    accumulated_alpha_socket = alpha_for_blend_factor
+                    is_alpha_set_by_layer_zero = True
+                elif current_blend_op_type == BlendMethod.BRIGHT.value or current_blend_op_type == BlendMethod.DEFAULT.value:
+                    # For additive, the "coverage" alpha comes from luminance
+                    rgb_to_bw_node = nodes.new(type='ShaderNodeRGBToBW')
+                    rgb_to_bw_node.name = f"Luminance_For_Coverage_L{i}"
+                    rgb_to_bw_node.label = f"Luminance for Coverage L{i}"
+                    links.new(current_layer_tinted_color_socket, rgb_to_bw_node.inputs['Color'])
+                    
+                    multiply_luminance_with_factor_node = nodes.new(type="ShaderNodeMath")
+                    multiply_luminance_with_factor_node.name = f"Coverage_Alpha_L{i}"
+                    multiply_luminance_with_factor_node.label = f"Coverage Alpha L{i}"
+                    multiply_luminance_with_factor_node.operation = 'MULTIPLY'
+                    multiply_luminance_with_factor_node.use_clamp = True
+                    links.new(rgb_to_bw_node.outputs['Val'], multiply_luminance_with_factor_node.inputs[0])
+                    links.new(alpha_for_blend_factor, multiply_luminance_with_factor_node.inputs[1])
+                    
+                    accumulated_alpha_socket = multiply_luminance_with_factor_node.outputs['Value']
+                    is_alpha_set_by_layer_zero = True
+                elif current_blend_op_type == BlendMethod.SHADOW.value or \
+                    current_blend_op_type == BlendMethod.ONLY_TRANSPARENCY.value:
+                    accumulated_alpha_socket = alpha_for_blend_factor
+                    is_alpha_set_by_layer_zero = True
+
+            # --- Apply Blend Operation ---
+            # OPAQUE, DEFAULT, SHADOW, ONLY_TRANSPARENCY primarily affect BaseColor stream
+            if current_blend_op_type == BlendMethod.NONE.value or \
+            current_blend_op_type == BlendMethod.OPAQUE.value or \
+            current_blend_op_type == BlendMethod.DEFAULT.value or \
+            current_blend_op_type == BlendMethod.SHADOW.value or \
+            current_blend_op_type == BlendMethod.ONLY_TRANSPARENCY.value:
+                mix_node = nodes.new(type='ShaderNodeMixRGB')
+                mix_node.name = f"Blend_BaseColor_Layer_{i}"
+                
+                if current_blend_op_type == BlendMethod.NONE.value:
+                    if i == 0:
+                        accumulated_base_color_socket = current_layer_tinted_color_socket
+                    else:
+                        mix_node.blend_type = 'MIX'
+                        links.new(accumulated_base_color_socket, mix_node.inputs['Color1'])
+                        links.new(current_layer_tinted_color_socket, mix_node.inputs['Color2'])
+                        links.new(alpha_for_blend_factor, mix_node.inputs['Fac'])
+                        accumulated_base_color_socket = mix_node.outputs['Color']
+                
+                elif current_blend_op_type == BlendMethod.OPAQUE.value or \
+                    current_blend_op_type == BlendMethod.ONLY_TRANSPARENCY.value:
+                    mix_node.blend_type = 'MIX'
+                    links.new(accumulated_base_color_socket, mix_node.inputs['Color1'])
+                    links.new(current_layer_tinted_color_socket, mix_node.inputs['Color2'])
+                    links.new(alpha_for_blend_factor, mix_node.inputs['Fac'])
+                    accumulated_base_color_socket = mix_node.outputs['Color']
+
+                elif current_blend_op_type == BlendMethod.DEFAULT.value or \
+                    current_blend_op_type == BlendMethod.SHADOW.value:
+                    term1_mix = nodes.new('ShaderNodeMixRGB')
+                    term1_mix.name = f"Term1_Default_Layer_{i}"
+                    term1_mix.blend_type = 'MIX'
+                    term1_mix.inputs['Color1'].default_value = (0,0,0,1)
+                    links.new(current_layer_tinted_color_socket, term1_mix.inputs['Color2'])
+                    links.new(alpha_for_blend_factor, term1_mix.inputs['Fac'])
+
+                    inv_src_color_node = nodes.new('ShaderNodeVectorMath')
+                    inv_src_color_node.name = f"InvSrc_Default_Layer_{i}"
+                    inv_src_color_node.operation = 'SUBTRACT'
+                    inv_src_color_node.inputs[0].default_value = (1,1,1)
+                    links.new(current_layer_tinted_color_socket, inv_src_color_node.inputs[1])
+
+                    term2_multiply = nodes.new('ShaderNodeMixRGB')
+                    term2_multiply.name = f"Term2_Default_Layer_{i}"
+                    term2_multiply.blend_type = 'MULTIPLY'
+                    term2_multiply.inputs['Fac'].default_value = 1.0
+                    links.new(accumulated_base_color_socket, term2_multiply.inputs['Color1'])
+                    links.new(inv_src_color_node.outputs['Vector'], term2_multiply.inputs['Color2'])
+                    
+                    mix_node.blend_type = 'ADD'
+                    mix_node.inputs['Fac'].default_value = 1.0
+                    links.new(term1_mix.outputs['Color'], mix_node.inputs['Color1'])
+                    links.new(term2_multiply.outputs['Color'], mix_node.inputs['Color2'])
+                    accumulated_base_color_socket = mix_node.outputs['Color']
+            
+            # BRIGHT, BACK_BRIGHT primarily affect EmissionColor stream
+            elif current_blend_op_type == BlendMethod.BRIGHT.value:
+                add_node = nodes.new(type='ShaderNodeMixRGB')
+                add_node.name = f"Blend_Emission_Layer_{i}"
+                add_node.blend_type = 'ADD'
+                # Color1 is previous accumulated emission
+                links.new(accumulated_emission_color_socket, add_node.inputs['Color1'])
+                # Color2 is current layer's tinted color
+                links.new(current_layer_tinted_color_socket, add_node.inputs['Color2'])
+                # Fac is current layer's R3M ARGB Alpha (intensity)
+                links.new(alpha_for_blend_factor, add_node.inputs['Fac'])
+                accumulated_emission_color_socket = add_node.outputs['Color']
+
+            elif current_blend_op_type == BlendMethod.BACK_BRIGHT.value:
+
+                term1_is_current_color = current_layer_tinted_color_socket
+
+                inv_src_color_node = nodes.new('ShaderNodeVectorMath')
+                inv_src_color_node.operation = 'SUBTRACT'
+                inv_src_color_node.inputs[0].default_value = (1,1,1)
+                links.new(current_layer_tinted_color_socket, inv_src_color_node.inputs[1])
+
+                term2_multiply = nodes.new('ShaderNodeMixRGB')
+                term2_multiply.blend_type = 'MULTIPLY'
+                term2_multiply.inputs['Fac'].default_value = 1.0
+                links.new(accumulated_emission_color_socket, term2_multiply.inputs['Color1'])
+                links.new(inv_src_color_node.outputs['Vector'], term2_multiply.inputs['Color2'])
+                
+                final_add_node = nodes.new('ShaderNodeMixRGB')
+                final_add_node.name = f"Blend_Emission_Layer_{i}"
+                final_add_node.blend_type = 'ADD'
+                final_add_node.inputs['Fac'].default_value = 1.0
+                links.new(term1_is_current_color, final_add_node.inputs['Color1'])
+                links.new(term2_multiply.outputs['Color'], final_add_node.inputs['Color2'])
+                accumulated_emission_color_socket = final_add_node.outputs['Color']
+            
+            
+            # LIGHTMAP and INV_LIGHTMAP typically affect BaseColor
+            elif current_blend_op_type == BlendMethod.LIGHTMAP.value:
+                multiply_node = nodes.new(type='ShaderNodeMixRGB')
+                multiply_node.name = f"Blend_BaseColor_Layer_{i}_Mul1"
+                multiply_node.blend_type = 'MULTIPLY'
+                multiply_node.inputs['Fac'].default_value = 1.0
+                links.new(accumulated_base_color_socket, multiply_node.inputs['Color1'])
+                links.new(current_layer_tinted_color_socket, multiply_node.inputs['Color2'])
+
+                multiply_by_two_node = nodes.new(type="ShaderNodeMixRGB")
+                multiply_by_two_node.name = f"Lightmap_x2_Layer_{i}"
+                multiply_by_two_node.blend_type = 'MULTIPLY'
+                multiply_by_two_node.inputs['Color1'].default_value = (2.0, 2.0, 2.0, 1.0)
+                links.new(multiply_node.outputs['Color'], multiply_by_two_node.inputs['Color2'])
+                multiply_by_two_node.inputs['Fac'].default_value = 1.0
+                accumulated_base_color_socket = multiply_by_two_node.outputs['Color']
+
+            elif current_blend_op_type == BlendMethod.INV_LIGHTMAP.value:
+                # BaseColor = PrevBaseColor * (1 - TintedCurrentTexColor)
+                inv_src_color_node = nodes.new('ShaderNodeVectorMath')
+                inv_src_color_node.operation = 'SUBTRACT'
+                inv_src_color_node.inputs[0].default_value = (1,1,1)
+                links.new(current_layer_tinted_color_socket, inv_src_color_node.inputs[1])
+
+                multiply_node = nodes.new(type='ShaderNodeMixRGB')
+                multiply_node.name = f"Blend_BaseColor_Layer_{i}"
+                multiply_node.blend_type = 'MULTIPLY'
+                multiply_node.inputs['Fac'].default_value = 1.0
+                links.new(accumulated_base_color_socket, multiply_node.inputs['Color1'])
+                links.new(inv_src_color_node.outputs['Vector'], multiply_node.inputs['Color2'])
+                accumulated_base_color_socket = multiply_node.outputs['Color']
+            
+            elif current_blend_op_type == BlendMethod.INV_BRIGHT.value:
+                one_minus_alpha_node = nodes.new(type="ShaderNodeMath")
+                one_minus_alpha_node.operation = 'SUBTRACT'
+                one_minus_alpha_node.inputs[0].default_value = 1.0
+                links.new(alpha_for_blend_factor, one_minus_alpha_node.inputs[1])
+
+                # Contribution = TintedCurrentTexColor * (1 - R3M_ARGB_A)
+                scaled_color_node = nodes.new(type='ShaderNodeMixRGB')
+                scaled_color_node.blend_type = 'MIX'
+                scaled_color_node.inputs['Color1'].default_value = (0,0,0,1)
+                links.new(current_layer_tinted_color_socket, scaled_color_node.inputs['Color2'])
+                links.new(one_minus_alpha_node.outputs['Value'], scaled_color_node.inputs['Fac'])
+                
+                # Add to accumulated emission
+                add_node = nodes.new(type='ShaderNodeMixRGB')
+                add_node.name = f"Blend_Emission_Layer_{i}"
+                add_node.blend_type = 'ADD'
+                add_node.inputs['Fac'].default_value = 1.0
+                links.new(accumulated_emission_color_socket, add_node.inputs['Color1'])
+                links.new(scaled_color_node.outputs['Color'], add_node.inputs['Color2'])
+                accumulated_emission_color_socket = add_node.outputs['Color']
+
+            # --- End of Layer Blending ---
+
+        # --- Final Connections to BSDF ---
+        if bsdf.inputs['Base Color'].is_linked: 
+            links.remove(bsdf.inputs['Base Color'].links[0])
+        links.new(accumulated_base_color_socket, bsdf.inputs['Base Color'])
         
-        for bump_output in bump_outputs:
-            for node in nodes:
-                if node.type == 'TEX_IMAGE' and node.image.colorspace_settings.name != 'Non-Color':
-                    if node.inputs["Vector"].is_linked:
-                        
-                        previous_uv_input = node.inputs["Vector"].links[0].from_socket
+        if bsdf.inputs['Emission Color'].is_linked: 
+            links.remove(bsdf.inputs['Emission Color'].links[0])
+        links.new(accumulated_emission_color_socket, bsdf.inputs['Emission Color'])
 
-                        mapping_node = nodes.new(type="ShaderNodeMapping")
+        if bsdf.inputs['Alpha'].is_linked: 
+            links.remove(bsdf.inputs['Alpha'].links[0])
+        links.new(accumulated_alpha_socket, bsdf.inputs['Alpha'])
+        
+        if accumulated_emission_strength_socket != None:
+            bsdf.inputs["Emission Strength"].default_value = 3.0
 
-                        links.new(previous_uv_input, mapping_node.inputs["Vector"])
-
-                        links.new(bump_output, mapping_node.inputs["Rotation"])
-
-                        links.new(mapping_node.outputs["Vector"], node.inputs["Vector"])
         
         organizer = Utils.NodeOrganizer()
         organizer.arrange_nodes(context, material.node_tree, 300, 300, True)
         
-        if uses_alpha == True:
-            material.blend_method = 'BLEND'
     
     @staticmethod
     def convert_vector3s_to_f(vector3s_collection, scale: float, position: Vector)-> Vector:
@@ -899,6 +1748,7 @@ class EntityRPKIndices:
         return False
 
 class MaterialProperties(Enum):
+    ALPHA_TYPE = "alpha_type"
     ARGB_ALPHA = "argb_alpha"
     METAL_EFFECT_SIZE = "metal_effect_size"
     ENVIROMENT_MAT = "enviroment_mat"
@@ -943,11 +1793,18 @@ class LayerFlag(Enum):
     _MAT_NO_COLLISON		= 0x00020000#	//Polygons using this material do not perform any collision checks. //Use layer flag 0.
     _MAT_WATER				= 0x00040000#	//Polygons using this material have a water effect.
 
-class AlphaType(Enum):
+class BlendMethod(Enum):
     NONE	= 0
-    DIRECT = 1
-    BLACK_ALPHA = 2
-    METAL_ALPHA = 3
+    OPAQUE = 1
+    DEFAULT = 2
+    BRIGHT = 3
+    BACK_BRIGHT = 8
+    INV_DEFAULT = 5
+    INV_BRIGHT = 6
+    LIGHTMAP = 10
+    INV_LIGHTMAP = 11
+    ONLY_TRANSPARENCY = 13
+    SHADOW = 14
 
 def register():
     bpy.utils.register_class(RFShared)
