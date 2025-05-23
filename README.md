@@ -41,7 +41,7 @@ __.BSP importer__ :
 
  -The "Visualize BSP Data (Slow)" option will construct bounding boxes for the Binary Space Partitioning (BSP) present in the .bsp file. It will show normal nodes and leaf nodes, with the leaf nodes accompaning its own geometry. This is useful if you want to see how the BSP actually works, together with how each face goes along with the leaf nodes. This will make the scene rendering extremely slow, however, as there will simply be too many objects in the scene, at least for the larger maps (guild maps usually fare far better).
 
- -The material groups of the map will be imported to the BSP_MAP collection. Entities will get imported to the BSP_ENTITIES collection. SPT entities are being imported, but are not working properly (and will probably be displayed as mostly black textures), as no reliable way was found to simulate the R3 particle system inside Blender.
+ -The material groups of the map will be imported to the BSP_MAP collection. Entities will get imported to the BSP_ENTITIES collection. SPT entities are being imported, but are not working properly (and will probably be displayed as mostly black textures), as no reliable way was found to simulate the R3 particle system inside Blender. There is an option for optional importation of SPT entities, which is turned off by default. The entities templates are imported to a separate BSP_ENTITIES_TEMPLATES collection, as they're used only to be copied later as they're placed around the map: Feel free to hide this collection.
 
  -Animated material groups are also being imported. You can see them working by pressing the play button in Blender's timeline.
 
