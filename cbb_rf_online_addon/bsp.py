@@ -741,7 +741,7 @@ class ImportBSP(Operator, ImportHelper):
                     ebp_file.seek(EntityList_offset)
                     
                     # The factors here are used only when shader_id is either 1 or 2. It's used for grass rendering, and the factors are frequency and amplitude of grass movement.
-                    entities_list = [EntityStruct(reader.read_ubyte(), reader.read_ubyte(), reader.read_fixed_string(62, "ascii").casefold(), reader.read_float(), reader.read_float(), reader.read_ushort(), reader.read_ushort(), reader.read_values("2f", 8)) for _ in range(EntityList_size // 84)]
+                    entities_list = [EntityStruct(reader.read_ubyte(), reader.read_ubyte(), reader.read_fixed_string(62, "euc-kr").casefold(), reader.read_float(), reader.read_float(), reader.read_ushort(), reader.read_ushort(), reader.read_values("2f", 8)) for _ in range(EntityList_size // 84)]
                     
                     
                     entities_file_paths = [read_entity.file_path for read_entity in entities_list]
@@ -788,7 +788,7 @@ class ImportBSP(Operator, ImportHelper):
                             entries_offset_indices_index = []
                             
                             for i in range (rpk_file_amount):
-                                entries_name.append(rpk_reader.read_fixed_string(52, "ascii").lstrip(f"."))
+                                entries_name.append(rpk_reader.read_fixed_string(52, "euc-kr").lstrip(f"."))
                                 entries_file_size.append(rpk_reader.read_int())
                                 # Skip name length, not used
                                 rpk_file.seek(2, 1)

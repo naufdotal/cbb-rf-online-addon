@@ -132,7 +132,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                     file_count = struct.unpack("<I", opened_file.read(4))[0]
 
                     for _ in range(file_count):
-                        file_name = opened_file.read(56).split(b"\x00")[0].decode("ascii")
+                        file_name = opened_file.read(56).split(b"\x00")[0].decode("euc-kr")
                         file_offset = struct.unpack("<I", opened_file.read(4))[0]
                         file_size = struct.unpack("<I", opened_file.read(4))[0]
                         if os.path.splitext(file_name)[0].casefold() == os.path.splitext(texture_name)[0].casefold():
@@ -261,8 +261,8 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                 bpy.context.window_manager.progress_update(object_num)
                                 
                                 msg_handler.debug_print(f" Processing object number: {object_num}")
-                                object_name = reader.read_fixed_string(100, "ascii")
-                                parent_name = reader.read_fixed_string(100, "ascii")
+                                object_name = reader.read_fixed_string(100, "euc-kr")
+                                parent_name = reader.read_fixed_string(100, "euc-kr")
                                 
                                 
                                 
@@ -292,8 +292,8 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                 msg_handler.debug_print(f"  Triangle amount: {triangle_amount}")
                                 msg_handler.debug_print(f"  Weight amount: {weight_amount}")
                                 
-                                texture_path = reader.read_fixed_string(100, "ascii")
-                                effect_path = reader.read_fixed_string(100, "ascii")
+                                texture_path = reader.read_fixed_string(100, "euc-kr")
+                                effect_path = reader.read_fixed_string(100, "euc-kr")
                                 
                                 msg_handler.debug_print(f"  Texture path: {texture_path}")
                                 msg_handler.debug_print(f"  Effect texture path: {effect_path}")
@@ -367,7 +367,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                     
                                     for i in range(bone_group_amount):
                                         current_group_bone_amount = reader.read_uint()
-                                        bone_names = [reader.read_fixed_string(100, "ascii") for i in range(current_group_bone_amount)]
+                                        bone_names = [reader.read_fixed_string(100, "euc-kr") for i in range(current_group_bone_amount)]
                                         
                                         for bone_name in bone_names:
                                             if bone_name not in unique_bone_names:
@@ -417,7 +417,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                         
                                         bone_names_for_assignment = []
                                         for _ in range(bone_amount):
-                                            bone_names_for_assignment.append(reader.read_fixed_string(100, "ascii"))
+                                            bone_names_for_assignment.append(reader.read_fixed_string(100, "euc-kr"))
                                         
                                         for _ in range(weight_amount):
                                             vertex_index, amount_of_weights, bone0_index, bone1_index, bone2_index, bone3_index = struct.unpack("<IIiiii", opened_file.read(24))
@@ -432,7 +432,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                     else:
                                         for _ in range(weight_amount):
                                             vertex_index, amount_of_weights = struct.unpack("<II", opened_file.read(8))
-                                            bone_names = [reader.read_fixed_string(100, "ascii") for _ in range(4)]
+                                            bone_names = [reader.read_fixed_string(100, "euc-kr") for _ in range(4)]
                                             read_weights = reader.read_values("4f", 16)
                                             base_vertices_weights[vertex_index] = (bone_names, read_weights)
                                         
@@ -1038,8 +1038,8 @@ class CBB_OT_ExportMSH(Operator, ExportHelper):
                                 writer.write_fixed_string(6, "ascii", "MESH08")
                             writer.write_ushort(object_amount)
                             for object_index in range(len(object_names)):
-                                writer.write_fixed_string(100, "ascii", object_names[object_index])
-                                writer.write_fixed_string(100, "ascii", object_parent_names[object_index])
+                                writer.write_fixed_string(100, "euc-kr", object_names[object_index])
+                                writer.write_fixed_string(100, "euc-kr", object_parent_names[object_index])
                                 writer.write_converted_matrix(object_world_matrices[object_index])
                                 writer.write_converted_matrix(object_local_matrices[object_index])
                                 writer.write_matrix(object_inverse_parent_matrices[object_index])
@@ -1049,8 +1049,8 @@ class CBB_OT_ExportMSH(Operator, ExportHelper):
                                     writer.write_ushort(object_weight_amounts[object_index])
                                 else:
                                     writer.write_ushort(0)
-                                writer.write_fixed_string(100, "ascii", object_texture_paths[object_index])
-                                writer.write_fixed_string(100, "ascii", object_effect_paths[object_index])
+                                writer.write_fixed_string(100, "euc-kr", object_texture_paths[object_index])
+                                writer.write_fixed_string(100, "euc-kr", object_effect_paths[object_index])
                                 file.write(bytearray(36))
                                 writer.write_uint(1)
                                 writer.write_uint(256)
@@ -1078,7 +1078,7 @@ class CBB_OT_ExportMSH(Operator, ExportHelper):
                                     for bone_amount, bone_names in object_weight_data[object_index]:
                                         writer.write_uint(bone_amount)
                                         for bone_name in bone_names:
-                                            writer.write_fixed_string(100, "ascii", bone_name)
+                                            writer.write_fixed_string(100, "euc-kr", bone_name)
                                         file.write(bytearray(100*(4 -bone_amount)))
                                 else:
                                     for vertex_position, unknown, vertex_normal in object_vertice_data[object_index]:
@@ -1095,7 +1095,7 @@ class CBB_OT_ExportMSH(Operator, ExportHelper):
                                     
                                     writer.write_uint(len(object_unique_bones_lists[object_index]))
                                     for unique_bone in object_unique_bones_lists[object_index]:
-                                        writer.write_fixed_string(100, "ascii", unique_bone)
+                                        writer.write_fixed_string(100, "euc-kr", unique_bone)
                                     if object_parent_names[object_index] == SkeletonData.INVALID_NAME:
                                         for vertex_index, valid_bone_amount, export_bone_indices, export_weight_values in object_weight_data[object_index]:
                                             writer.write_uint(vertex_index)

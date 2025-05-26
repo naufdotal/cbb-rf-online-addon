@@ -93,7 +93,7 @@ class CBB_OT_ImportAni(Operator, ImportHelper):
                         reader = Utils.Serializer(f, Utils.Serializer.Endianness.Little, Utils.Serializer.Quaternion_Order.XYZW, Utils.Serializer.Matrix_Order.ColumnMajor, co_conv)
                         animated_object_count = reader.read_ushort()
                         for i in range(animated_object_count):
-                            animated_object_names.append(reader.read_fixed_string(100, "ascii"))
+                            animated_object_names.append(reader.read_fixed_string(100, "euc-kr"))
                             # If set to 0 animation is not considered
                             frame_amount.append(reader.read_ushort())
                             # If set higher than the amount of keyframes that are registered, it affects looping animations, which does indicate this is the maximum frame.
@@ -610,7 +610,7 @@ class CBB_OT_ExportAni(Operator, ExportHelper):
             writer = Utils.Serializer(file, Utils.Serializer.Endianness.Little, Utils.Serializer.Quaternion_Order.XYZW, Utils.Serializer.Matrix_Order.ColumnMajor, co_conv)
             writer.write_ushort(len(export_object_names))
             for index, object_name in enumerate(export_object_names):
-                writer.write_fixed_string(100, "ascii", object_name)
+                writer.write_fixed_string(100, "euc-kr", object_name)
                 writer.write_ushort(export_unique_keyframe_counts[index])
                 writer.write_ushort(export_maximum_frames[index])
                 file.write(bytearray(36))
