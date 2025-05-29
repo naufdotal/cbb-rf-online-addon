@@ -256,6 +256,29 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                             msg_handler.debug_print(f"Importing object from: {filepath} // Is MESH08 type: {is_mesh08} // Object amount: {object_amount}")
                             bpy.context.window_manager.progress_begin(0, object_amount)
                             
+                            # If there is no target armature yet, search for any armature that has all used bones
+                            if target_armature is None:
+                                for obj in bpy.context.scene.objects:
+                                    if obj.type == "ARMATURE":
+                                        bone_names = {bone.name for bone in obj.data.bones}
+                                        
+                                        # Check if the armature has all the bones in list_of_bones_used
+                                        if list_of_bones_used.issubset(bone_names):
+                                            target_armature = obj
+                                            break
+                                if target_armature is None:
+                                    msg_handler.report("INFO", f"No compatible armature could be found for file at: {filepath}. Information about parenting of objects to bones will be written in custom properties.")
+                            else:
+                                bone_names = {bone.name for bone in target_armature.data.bones}
+                                        
+                                # Check if the armature has all the bones in list_of_bones_used
+                                if list_of_bones_used.issubset(bone_names) == False:
+                                    target_armature = None
+                                    msg_handler.report("INFO", f"Selected armature is not compatible with the imported mesh. Information about parenting of objects to bones will be written in custom properties.")
+                            
+                            if target_armature is not None:
+                                bone_names_list = [bone.name for bone in target_armature.data.bones]
+                            
                             for object_num in range(object_amount):
                                 
                                 bpy.context.window_manager.progress_update(object_num)
@@ -286,7 +309,9 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                 if weight_amount != 0:
                                     parent_name = SkeletonData.INVALID_NAME
                                 
-                                object_parent_names.append(parent_name)
+                                force_parent_as_weights = False
+                                if target_armature is not None and vertex_amount != 0 and parent_name in bone_names_list:
+                                    force_parent_as_weights = True
                                 
                                 msg_handler.debug_print(f"  Vertex amount: {vertex_amount}")
                                 msg_handler.debug_print(f"  Triangle amount: {triangle_amount}")
@@ -509,7 +534,17 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                     msg_handler.debug_print(f"  Weight data assigned")
                                 else:
                                     msg_handler.debug_print(f"  No weight data to assign")
-                                    
+                                
+                                # Set object-bone parenting as direct weight parenting.
+                                if force_parent_as_weights == True:
+                                    main_group = obj.vertex_groups.new(name=parent_name)
+                                    for vertex_index in range(len(vertices)):
+                                        main_group.add([vertex_index], 1.0, "ADD")
+                                
+                                if force_parent_as_weights == True:
+                                    parent_name = SkeletonData.INVALID_NAME
+                                
+                                object_parent_names.append(parent_name)
                                 
                                 if texture_path:
                                     texture_path = ntpath.basename(texture_path)
@@ -523,25 +558,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                 else:
                                     msg_handler.debug_print(f"  Object has no texture path")
                             
-                            # If there is no target armature yet, search for any armature that has all used bones
-                            if target_armature is None:
-                                for obj in bpy.context.scene.objects:
-                                    if obj.type == "ARMATURE":
-                                        bone_names = {bone.name for bone in obj.data.bones}
-                                        
-                                        # Check if the armature has all the bones in list_of_bones_used
-                                        if list_of_bones_used.issubset(bone_names):
-                                            target_armature = obj
-                                            break
-                                if target_armature is None:
-                                    msg_handler.report("INFO", f"No compatible armature could be found for file at: {filepath}. Information about parenting of objects to bones will be written in custom properties.")
-                            else:
-                                bone_names = {bone.name for bone in target_armature.data.bones}
-                                        
-                                # Check if the armature has all the bones in list_of_bones_used
-                                if list_of_bones_used.issubset(bone_names) == False:
-                                    target_armature = None
-                                    msg_handler.report("INFO", f"Selected armature is not compatible with the imported mesh. Information about parenting of objects to bones will be written in custom properties.")
+                            
                             
                             for obj in created_objects:
                                 mesh = obj.data
