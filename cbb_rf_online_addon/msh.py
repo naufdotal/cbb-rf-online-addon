@@ -292,8 +292,6 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                 msg_handler.debug_print(f"  Object name: {object_name}")
                                 msg_handler.debug_print(f"  Object parent name: {parent_name}")
                                 
-                                
-                                
                                 object_world_matrix = reader.read_converted_matrix()
                                 
                                 msg_handler.debug_print(f"  Object converted matrix: {object_world_matrix}")
@@ -491,20 +489,36 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                 
                                 msg_handler.debug_print(f"  Data from file read successfully")
                                 
-                                mesh = bpy.data.meshes.new(object_name)
+                                if vertex_amount != 0:
+                                    mesh = bpy.data.meshes.new(object_name)
+                                else: 
+                                    mesh = None
+                                
                                 obj = bpy.data.objects.new(object_name, mesh)
+                                
                                 obj.matrix_world = object_world_matrix
                                 new_collection.objects.link(obj)
                                 created_objects.append(obj)
                                 
                                 msg_handler.debug_print(f"  Object created in Blender")
                                 
-                                mesh.from_pydata(vertices, [], triangles, False)
-                                mesh.update()
+                                if vertex_amount != 0:
+                                    mesh.from_pydata(vertices, [], triangles, False)
+                                    mesh.update()
+                                    
+                                    bm = bmesh.new()
+                                    bm.from_mesh(mesh)
+
+                                    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0001)
+
+                                    bm.to_mesh(mesh)
+                                    mesh.update()
+
+                                    bm.free()
                                 
                                 msg_handler.debug_print(f"  Mesh Data assigned")
                                 
-                                if uvs:
+                                if uvs and mesh is not None:
                                     mesh.uv_layers.new(name="UVMap")
                                     uv_layer = mesh.uv_layers.active.data
                                     for poly in mesh.polygons:
@@ -516,7 +530,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                     msg_handler.debug_print(f"  No UV data to assign")
                                 
                                 
-                                if weights:
+                                if weights and mesh is not None:
                                     vertex_groups = {}
                                     for group in obj.vertex_groups:
                                         vertex_groups[group.name] = group
@@ -559,22 +573,8 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                     msg_handler.debug_print(f"  Object has no texture path")
                             
                             
-                            
-                            for obj in created_objects:
-                                mesh = obj.data
-                                bm = bmesh.new()
-                                bm.from_mesh(mesh)
-
-                                bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0001)
-
-                                bm.to_mesh(mesh)
-                                mesh.update()
-
-                                bm.free()
-                            
-                            
                             for created_object, parent_name in zip(created_objects, object_parent_names):
-                                if target_armature is not None:
+                                if target_armature is not None and created_object.type == "MESH":
                                     armature_modifier = created_object.modifiers.new(name="Armature", type="ARMATURE")
                                     armature_modifier.object = target_armature
                                     
