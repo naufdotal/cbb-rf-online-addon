@@ -505,16 +505,6 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                 if vertex_amount != 0:
                                     mesh.from_pydata(vertices, [], triangles, False)
                                     mesh.update()
-                                    
-                                    bm = bmesh.new()
-                                    bm.from_mesh(mesh)
-
-                                    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0001)
-
-                                    bm.to_mesh(mesh)
-                                    mesh.update()
-
-                                    bm.free()
                                 
                                 msg_handler.debug_print(f"  Mesh Data assigned")
                                 
@@ -571,6 +561,17 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                         msg_handler.debug_print(f"  Texture data assignment failed")
                                 else:
                                     msg_handler.debug_print(f"  Object has no texture path")
+                                    
+                                if vertex_amount != 0:
+                                    bm = bmesh.new()
+                                    bm.from_mesh(mesh)
+
+                                    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0001)
+
+                                    bm.to_mesh(mesh)
+                                    mesh.update()
+
+                                    bm.free()
                             
                             
                             for created_object, parent_name in zip(created_objects, object_parent_names):
