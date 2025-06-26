@@ -298,11 +298,7 @@ class CBB_OT_ImportAni(Operator, ImportHelper):
         return {"FINISHED"}
 
     def invoke(self, context: Context, event: Event):
-        if self.directory:
-            return context.window_manager.invoke_props_dialog(self)
-            # return self.execute(context)
-        context.window_manager.fileselect_add(self)
-        return {"RUNNING_MODAL"}
+        return self.invoke_popup(context)
 
 class CBB_FH_ImportAni(bpy.types.FileHandler):
     bl_idname = "CBB_FH_ani_import"

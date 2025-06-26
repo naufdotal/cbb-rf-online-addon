@@ -955,10 +955,7 @@ class ImportBSP(Operator, ImportHelper):
         return obj.modifiers['UVWarp']
 
     def invoke(self, context: Context, event: Event):
-        if self.directory:
-            return context.window_manager.invoke_props_dialog(self)
-        context.window_manager.fileselect_add(self)
-        return {"RUNNING_MODAL"}
+        return self.invoke_popup(context)
 
     @staticmethod
     def duplicate_object_with_children(obj, collection)-> bpy.types.Object:

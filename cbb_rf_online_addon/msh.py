@@ -27,7 +27,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
     filename_ext = ".msh"
 
     filter_glob: StringProperty(default="*.msh",options={"HIDDEN"}) # type: ignore
-
+    
     files: CollectionProperty(
         type=bpy.types.OperatorFileListElement,
         options={"HIDDEN", "SKIP_SAVE"}
@@ -614,10 +614,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
         return {"FINISHED"}
 
     def invoke(self, context: Context, event: Event):
-        if self.directory:
-            return context.window_manager.invoke_props_dialog(self)
-        context.window_manager.fileselect_add(self)
-        return {"RUNNING_MODAL"}
+        return self.invoke_popup(context)
 
 class CBB_FH_ImportMSH(bpy.types.FileHandler):
     bl_idname = "CBB_FH_msh_import"

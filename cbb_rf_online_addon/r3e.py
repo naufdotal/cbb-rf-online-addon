@@ -353,10 +353,7 @@ class ImportR3E(Operator, ImportHelper):
     
     
     def invoke(self, context: Context, event: Event):
-        if self.directory:
-            return context.window_manager.invoke_props_dialog(self)
-        context.window_manager.fileselect_add(self)
-        return {"RUNNING_MODAL"}
+        return self.invoke_popup(context)
 
 class CBB_FH_ImportR3E(bpy.types.FileHandler):
     bl_idname = "CBB_FH_r3e_import"
