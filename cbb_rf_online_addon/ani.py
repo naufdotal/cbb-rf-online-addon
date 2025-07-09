@@ -288,6 +288,20 @@ class CBB_OT_ImportAni(Operator, ImportHelper):
                     # Set animation frames range
                     action.frame_range = (0, highest_frame)
 
+                    # Automatically push Action to NLA as a strip
+                    if target_armature:
+                        anim_data = target_armature.animation_data
+                        if anim_data is None:
+                            anim_data = target_armature.animation_data_create()
+                        existing_track = anim_data.nla_tracks.get(action.name)
+                        if existing_track:
+                            anim_data.nla_tracks.remove(existing_track)
+                        track = anim_data.nla_tracks.new()
+                        track.name = action.name
+                        strip = track.strips.new(action.name, int(action.frame_range[0]), action)
+                        strip.name = action.name
+
+
                 except Exception as e:
                     animation_name = Path(file.name).stem
                     msg_handler.report("ERROR", f"Failed to create animation {animation_name}: {e}")
